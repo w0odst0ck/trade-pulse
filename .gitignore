@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .DS_Store
 data/
+docs/
+memory/
+项目目标.md
+项目计划.md
