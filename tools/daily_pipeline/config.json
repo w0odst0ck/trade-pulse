@@ -1,0 +1,29 @@
+{
+  "symbol": "588000",
+  "benchmark": "000688",
+  "provider": "akshare",
+  "data_dir": "data",
+  "weights": {
+    "momentum": 0.25,
+    "trend": 0.25,
+    "volatility": 0.10,
+    "volume_price": 0.15,
+    "rsrs": 0.15,
+    "relative_strength": 0.10
+  },
+  "thresholds": {
+    "buy": 0.3,
+    "sell": -0.2,
+    "confirm_days": 2,
+    "weekly_filter_percentile": 0.2
+  },
+  "momentum_window": 5,
+  "trend_window": 20,
+  "atr_window": 14,
+  "rsrs_window": 18,
+  "rel_strength_window": 20,
+  "hist_window": 60,
+  "weekly_slope_window": 5,
+  "retry_count": 2,
+  "retry_delay_sec": 3
+}
