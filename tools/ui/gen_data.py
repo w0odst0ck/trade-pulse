@@ -76,15 +76,32 @@ def build_data() -> dict:
     return data
 
 
+def sanitize(obj):
+    """递归清洗：NaN/Infinity → None（JSON 规范要求，浏览器 JSON.parse 会拒绝裸 NaN）"""
+    import math
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize(v) for v in obj]
+    return obj
+
+
 def atomic_write(data: dict, out_path: Path) -> bool:
     """原子写 + 校验"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 清洗 NaN（pandas CSV 读入的 float NaN 序列化为裸 NaN，浏览器解析失败）
+    data = sanitize(data)
 
     # 写临时文件
     fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(data, f, ensure_ascii=False, allow_nan=False)
     except Exception as e:
         os.unlink(tmp)
         print(f"  [ERR] 写入临时文件失败: {e}")

@@ -8,14 +8,19 @@ v2：数据改为外部加载（fetch assets/data.json?t=now），
 
 用法：
   python gen_dashboard.py              # 生成 docs/dashboard.html
-  python gen_dashboard.py --open       # 生成并打开本地预览
+  python gen_dashboard.py --serve      # 生成并启动本地 http server 预览（fetch 需要 http 协议）
 """
 
 import argparse
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+
+import http.server
+import socketserver
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -59,12 +64,25 @@ td{padding:6px 8px;border-bottom:1px solid #21262d}
 <body>
 <div id="app"><div class="err">加载中...</div></div>
 <script>
+// HTML 转义（防 XSS：所有外部字段插值前先 esc）
+function esc(s) {
+  return String(s==null?'':s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// 本地预览（file:// 协议下 fetch 会被浏览器拦截）→ 读不到数据时提示用 http server
+var isFile = location.protocol === 'file:';
+var src = isFile
+  ? '（file:// 下浏览器禁止 fetch，请用 python -m http.server 预览）'
+  : 'assets/data.json?t=' + Date.now();
+
 // cache-busting: 强制拿最新数据
 fetch('assets/data.json?t=' + Date.now())
   .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
   .then(render)
   .catch(function(e){ document.getElementById('app').innerHTML =
-    '<div class="err">数据加载失败: '+e.message+'<br>请确认 data.json 已生成</div>'; });
+    '<div class="err">数据加载失败: '+esc(e.message)+'<br>'+(isFile?'（file:// 下浏览器禁止 fetch，请用 python -m http.server 预览）':'请确认 data.json 已生成')+'</div>'; });
 
 function render(D) {
   var a = document.getElementById('app');
@@ -73,9 +91,9 @@ function render(D) {
 
   // header
   h += '<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">';
-  h += '<h1>trade-pulse 信号面板</h1><span style="color:#8b949e;font-size:13px">生成 '+D.generated_at+'</span></div>';
+  h += '<h1>trade-pulse 信号面板</h1><span style="color:#8b949e;font-size:13px">生成 '+esc(D.generated_at)+'</span></div>';
   h += '<div style="margin-top:8px;font-size:13px;color:#8b949e">';
-  for (var i=0;i<syms.length;i++) h += '<span class="badge bg-cash" style="margin-right:6px">'+syms[i]+'</span>';
+  for (var i=0;i<syms.length;i++) h += '<span class="badge bg-cash" style="margin-right:6px">'+esc(syms[i])+'</span>';
   h += '</div></div>';
 
   // 每个标的一张信号卡
@@ -103,7 +121,7 @@ function render(D) {
       var dt = (t.entry_date||t.date||'').slice(0,10);
       var pr = t.entry_price||t.price||0;
       var rs = t.reason||'';
-      h += '<tr><td>'+dt+'</td><td class="'+cls+'">'+t.action+'</td><td>'+(pr?Number(pr).toFixed(3):'')+'</td><td style="color:#8b949e;font-size:12px">'+rs+'</td></tr>';
+      h += '<tr><td>'+esc(dt)+'</td><td class="'+cls+'">'+esc(t.action)+'</td><td>'+(pr?Number(pr).toFixed(3):'')+'</td><td style="color:#8b949e;font-size:12px">'+esc(rs)+'</td></tr>';
     }
     h += '</table></div>';
   }
@@ -113,7 +131,7 @@ function render(D) {
     h += '<div class="card"><h2>价格走势 <span style="color:#8b949e;font-weight:400;font-size:12px">近200日</span></h2><canvas id="pc"></canvas></div>';
   }
 
-  h += '<div class="ft">trade-pulse &#183; 数据生成 '+D.generated_at+'</div>';
+  h += '<div class="ft">trade-pulse &#183; 数据生成 '+esc(D.generated_at)+'</div>';
   a.innerHTML = h;
 
   drawEquity(D.equity||[]);
@@ -130,8 +148,8 @@ function signalCard(sym, s) {
   var fn = s.factor_names||['动量','趋势','量价','RSRS'];
   var keys = ['momentum','trend','volume_price','rsrs'];
 
-  var h = '<div class="card"><h2>'+sym+' 今日信号</h2><div class="sg">';
-  h += '<span class="sl">日期</span><span class="sv">'+(s.date||'-')+'</span>';
+  var h = '<div class="card"><h2>'+esc(sym)+' 今日信号</h2><div class="sg">';
+  h += '<span class="sl">日期</span><span class="sv">'+esc(s.date||'-')+'</span>';
   h += '<span class="sl">状态</span><span class="sv"><span class="badge '+st+'">'+sl+'</span></span>';
   h += '<span class="sl">综合得分</span><span class="sv" style="color:'+scCls+'">'+Number(sc).toFixed(2)+'</span>';
   h += '</div><div class="fg" style="margin-top:12px">';
@@ -139,7 +157,7 @@ function signalCard(sym, s) {
     var v = f[keys[i]]||0;
     var cls = v>0.3?'g':v<-0.3?'r':'y';
     var d = v>0.3?'&#9650;':v<-0.3?'&#9660;':'&#9644;';
-    h += '<div class="fi"><div class="fn">'+fn[i]+'</div><div class="fv '+cls+'">'+d+' '+Number(v).toFixed(2)+'</div></div>';
+    h += '<div class="fi"><div class="fn">'+esc(fn[i])+'</div><div class="fv '+cls+'">'+d+' '+Number(v).toFixed(2)+'</div></div>';
   }
   h += '</div></div>';
   return h;
@@ -240,7 +258,7 @@ function drawPrice(prices){
 
 def main():
     parser = argparse.ArgumentParser(description='生成信号面板 docs/dashboard.html')
-    parser.add_argument('--open', action='store_true', help='生成后打开本地预览')
+    parser.add_argument('--serve', action='store_true', help='生成后启动本地 http server 预览（file:// 下 fetch 会被浏览器拦截）')
     args = parser.parse_args()
 
     print("  [UI] 生成面板 docs/dashboard.html")
@@ -251,13 +269,19 @@ def main():
     kb = os.path.getsize(OUT_PATH) / 1024
     print(f"  [OK] {OUT_PATH.resolve()} ({kb:.0f}KB, 动态加载 data.json)")
 
-    if args.open:
-        if sys.platform == "linux":
-            subprocess.run(["xdg-open", str(OUT_PATH)], check=False)
-        elif sys.platform == "darwin":
-            subprocess.run(["open", str(OUT_PATH)], check=False)
-        else:
-            os.startfile(OUT_PATH)
+    if args.serve:
+        # file:// 下 fetch 被浏览器拦截，必须走 http server
+        os.chdir(OUT_DIR)
+        port = 8899
+        handler = http.server.SimpleHTTPRequestHandler
+        httpd = socketserver.TCPServer(("127.0.0.1", port), handler)
+        url = f"http://127.0.0.1:{port}/index.html"
+        print(f"  [SERVE] 本地预览: {url}  (Ctrl+C 停止)")
+        threading.Timer(1.0, lambda: subprocess.run(["xdg-open", url], check=False) if sys.platform == "linux" else None).start()
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
