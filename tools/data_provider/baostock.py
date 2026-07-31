@@ -2,6 +2,7 @@
 
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 
 from .base import DataProvider, DataProviderError
@@ -86,9 +87,14 @@ class BaoStockProvider(DataProvider):
         if "change" not in df.columns:
             df["change"] = df["close"].diff()
         if "amplitude" not in df.columns:
-            df["amplitude"] = (df["high"] - df["low"]) / df["close"].shift(1) * 100
+            prev_close = df["close"].shift(1).replace(0, np.nan)
+            df["amplitude"] = (df["high"] - df["low"]) / prev_close * 100
         if "turnover" not in df.columns:
             df["turnover"] = 0.0
         if "symbol" not in df.columns:
             df["symbol"] = symbol
+        # 首行派生列必然 NaN → 填 0，保证 CSV 无 NaN/inf
+        for col in ["change_pct", "change", "amplitude"]:
+            if col in df.columns:
+                df[col] = df[col].fillna(0.0).replace([float("inf"), float("-inf")], 0.0)
         return df.sort_values("date").reset_index(drop=True)
