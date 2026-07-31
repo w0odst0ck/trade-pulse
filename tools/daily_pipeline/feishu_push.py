@@ -13,6 +13,7 @@ feishu_push.py — 飞书推送模块
 import json
 import sys
 import os
+import time
 from pathlib import Path
 
 import requests
@@ -37,7 +38,7 @@ def get_tenant_token() -> str:
         try:
             with open(TOKEN_CACHE_PATH) as f:
                 cached = json.load(f)
-            if cached.get('expire_at', 0) > __import__('time').time():
+            if cached.get('expire_at', 0) > time.time():
                 return cached['token']
         except Exception:
             pass
@@ -58,7 +59,7 @@ def get_tenant_token() -> str:
     with open(TOKEN_CACHE_PATH, "w") as f:
         json.dump({
             "token": token,
-            "expire_at": __import__('time').time() + expire_in - 300,
+            "expire_at": time.time() + expire_in - 300,
         }, f)
 
     return token

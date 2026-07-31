@@ -37,7 +37,10 @@ class AkShareProvider(DataProvider):
                 # 指数
                 sh_symbol = f"sh{symbol}" if not symbol.startswith("sh") else symbol
                 df = ak.stock_zh_index_daily_em(symbol=sh_symbol)
-                df = df[df["date"].str.replace("-", "", regex=False) >= start].copy()
+                df = df[
+                    (df["date"].str.replace("-", "", regex=False) >= start)
+                    & (df["date"].str.replace("-", "", regex=False) <= end)
+                ].copy()
 
             if df is None or len(df) == 0:
                 return None

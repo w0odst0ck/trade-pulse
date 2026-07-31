@@ -236,7 +236,9 @@ def weekly_modifier(df: pd.DataFrame, config: dict) -> pd.Series:
         result.iloc[i] = round(modifier, 3)
 
     # 映射回日线（用 period 字符串对齐，避免 resample 周五 vs to_period 周一不匹配）
-    df_weekly['modifier'] = result.values
+    # 防前视：调节分 shift(1) 滞后一周——本周五收盘才确定的 ma20_slope，
+    # 下周一才开始生效，避免周一~周四提前使用未来信息
+    df_weekly['modifier'] = result.shift(1).values
     df_weekly['week_period'] = pd.to_datetime(df_weekly['date']).dt.to_period('W-FRI').astype(str)
     weekly_map = df_weekly.set_index('week_period')['modifier'].to_dict()
     df_daily = df[['date']].copy()

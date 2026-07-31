@@ -54,6 +54,15 @@ def is_trading_day(d: date = None) -> bool:
         d = date.today()
 
     d_str = d.strftime("%Y-%m-%d")
+    year = d.year
+
+    # 日历数据覆盖范围检查（2026-2027 手工维护）
+    if year < 2026 or year > 2027:
+        # 超出维护范围：仍按周末/调休逻辑处理，但记录警告
+        import sys
+        if not getattr(is_trading_day, '_warned', False):
+            print(f"  [WARN] 交易日历未覆盖 {year} 年，节假日可能误判（建议更新 A_HOLIDAYS）", file=sys.stderr)
+            is_trading_day._warned = True
 
     # 调休上班日
     if d_str in A_WORKDAYS:

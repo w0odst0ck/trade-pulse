@@ -9,3 +9,6 @@ memory/
 信号规则系统设计.md
 tools/ui/dashboard.html
 .feishu_token.json
+# 嵌套仓库：Kronos 独立 git，不入主仓库
+/tools/kronos/
+/tools/level2-toolkit/

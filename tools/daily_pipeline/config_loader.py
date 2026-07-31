@@ -34,6 +34,9 @@ def load_strategy(name: str = "default") -> dict:
     with open(path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    if not isinstance(config, dict):
+        raise ValueError(f"策略文件格式无效或为空: {path}")
+
     config["_strategy_name"] = name
     config["_strategy_path"] = str(path)
     return config
@@ -53,6 +56,6 @@ def list_strategies() -> list[dict]:
                 "description": cfg.get("description", ""),
                 "path": str(f),
             })
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  [WARN] 策略文件加载失败 {f.name}: {e}")
     return results

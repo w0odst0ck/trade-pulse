@@ -84,7 +84,7 @@ def main():
                         'max_drawdown': m['max_drawdown'],
                         'trade_count': m['trade_count'],
                     })
-            except (ValueError, KeyError) as e:
+            except Exception as e:
                 print(f"  [ERR] buy_th={buy_th}: {e}")
 
         if fold_scores:

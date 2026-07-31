@@ -81,9 +81,9 @@ def main():
             "date": str(latest.get("date", ""))[:10],
             "factors": {
                 k: round(float(latest.get(k, 0)), 3)
-                for k in ["momentum", "trend", "volatility", "volume_price", "rsrs", "relative_strength"]
+                for k in ["momentum", "trend", "volume_price", "rsrs", "relative_strength"]
             },
-            "factor_names": ["动量", "趋势", "波动", "量价", "RSRS", "比价"],
+            "factor_names": ["动量", "趋势", "量价", "RSRS", "比价"],
         },
         "equity": dicterize(equity) if not equity.empty else [],
         "prices": dicterize(daily.tail(200)) if not daily.empty else [],
@@ -133,7 +133,7 @@ var D = @DATA@;
 
 (function() {
   var a = document.getElementById('app');
-  var s = D.signal, f = s.factors, fn = s.factor_names, keys = ['momentum','trend','volatility','volume_price','rsrs','relative_strength'];
+  var s = D.signal, f = s.factors, fn = s.factor_names, keys = ['momentum','trend','volume_price','rsrs','relative_strength'];
   var st = {持仓:'bg-long',观望:'bg-wait',空仓:'bg-cash'}[s.state]||'bg-cash';
   var sl = s.state=='持仓'?'持有中':s.state=='观望'?'观望':'空仓';
   var sc = s.score;
@@ -269,11 +269,25 @@ function drawEquity(data) {
   if (bh) drawLine(bh,'rgba(139,148,158,0.5)','持有');
   drawLine(eq,'#58a6ff','策略');
 
-  // metrics
+  // metrics（动态计算，不硬编码）
   var eqf = document.getElementById('eqf');
   var eqm = document.getElementById('eqm');
   if (eqf) eqf.textContent = eq[eq.length-1].toFixed(3);
-  if (eqm) eqm.textContent = '年化 +11.9% &#183; 夏普 0.42 &#183; 回撤 -21.0%' + (bh?' &#183; 持有 '+bh[bh.length-1].toFixed(2):'');
+  if (eqm && eq.length>1) {
+    var n = eq.length;
+    var totalRet = eq[n-1]/eq[0]-1;
+    var years = n/252;
+    var annRet = years>0 ? Math.pow(1+totalRet,1/years)-1 : 0;
+    var peak = eq[0], maxDD = 0;
+    for (var i=1;i<n;i++){ if(eq[i]>peak) peak=eq[i]; var dd=eq[i]/peak-1; if(dd<maxDD) maxDD=dd; }
+    var rets = [];
+    for (var i=1;i<n;i++) rets.push(eq[i]/eq[i-1]-1);
+    var mean = 0; for (var i=0;i<rets.length;i++) mean+=rets[i]; mean/=rets.length;
+    var sd = 0; for (var i=0;i<rets.length;i++) sd+=(rets[i]-mean)*(rets[i]-mean);
+    sd = Math.sqrt(sd/(rets.length-1))*Math.sqrt(252);
+    var sharpe = sd>0 ? (annRet-0.02)/sd : 0;
+    eqm.textContent = '年化 '+(annRet*100>=0?'+':'')+(annRet*100).toFixed(1)+'% &#183; 夏普 '+sharpe.toFixed(2)+' &#183; 回撤 '+(maxDD*100).toFixed(1)+'%' + (bh?' &#183; 持有 '+bh[bh.length-1].toFixed(2):'');
+  }
 }
 
 // factor trends
@@ -288,8 +302,8 @@ function drawFactors(features) {
   var pw = W-pl-pr, ph = H-pt-pb;
   var xS = pw/(features.length-1||1);
 
-  var keys = ['momentum','trend','volatility','volume_price','rsrs','relative_strength'];
-  var names = ['动量','趋势','波动','量价','RSRS','比价'];
+  var keys = ['momentum','trend','volume_price','rsrs','relative_strength'];
+  var names = ['动量','趋势','量价','RSRS','比价'];
   var colors = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff'];
 
   for (var k=0;k<keys.length;k++) {

@@ -100,7 +100,7 @@ def get_adaptive_thresholds(config: dict, latest_features: dict) -> dict:
         }
 
 
-def decide(latest_features: dict, historical_features, state_override=None, persist=True, config_override=None) -> dict:
+def decide(latest_features: dict, _historical_features=None, state_override=None, persist=True, config_override=None) -> dict:
     """状态机决策主逻辑
 
     Parameters
@@ -126,7 +126,7 @@ def decide(latest_features: dict, historical_features, state_override=None, pers
     weekly_mod = latest_features.get('weekly_modifier', 0.0)
     adjusted_score = total_score + weekly_mod
 
-    if adjusted_score is None or adjusted_score != adjusted_score:  # NaN check
+    if adjusted_score != adjusted_score:  # NaN check
         adjusted_score = total_score
 
     current_state = state['state']
@@ -253,7 +253,6 @@ def _build_result(state: str, score: float, action: str, explanation: str,
         'factors': {
             'momentum': features.get('momentum', 0),
             'trend': features.get('trend', 0),
-            'volatility': features.get('volatility', 0),
             'volume_price': features.get('volume_price', 0),
             'rsrs': features.get('rsrs', 0),
             'relative_strength': features.get('relative_strength', 0),
@@ -278,7 +277,6 @@ def print_panel(result: dict, verbose: bool = True):
     print(f"  ─────────────────────────────")
     print(f"  短期动量:     {f['momentum']:+.2f}  {factor_arrow(f['momentum'])} {factor_emoji(f['momentum'])}")
     print(f"  中期趋势:     {f['trend']:+.2f}  {factor_arrow(f['trend'])} {factor_emoji(f['trend'])}")
-    print(f"  波动率:       {f['volatility']:+.2f}  {factor_arrow(f['volatility'])} {factor_emoji(f['volatility'])}")
     print(f"  量价关系:     {f['volume_price']:+.2f}  {factor_arrow(f['volume_price'])} {factor_emoji(f['volume_price'])}")
     print(f"  RSRS:         {f['rsrs']:+.2f}  {factor_arrow(f['rsrs'])} {factor_emoji(f['rsrs'])}")
     print(f"  比价优势:     {f['relative_strength']:+.2f}  {factor_arrow(f['relative_strength'])} {factor_emoji(f['relative_strength'])}")

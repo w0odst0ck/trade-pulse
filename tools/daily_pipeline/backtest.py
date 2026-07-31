@@ -502,7 +502,7 @@ def run_regime_analysis(
             continue
 
         for factor in factors:
-            adj = {k: v for k, v in weights.items() if k != factor}
+            adj = {k: v for k, v in config['weights'].items() if k != factor}
             remaining = sum(adj.values())
             if remaining > 0:
                 adj = {k: v / remaining for k, v in adj.items()}
@@ -628,7 +628,7 @@ def run_factor_attribution(
 
     for factor in factors:
         # 调整权重：移除因子后，剩余权重归一化
-        adj = {k: v for k, v in weights.items() if k != factor}
+        adj = {k: v for k, v in config['weights'].items() if k != factor}
         remaining = sum(adj.values())
         if remaining > 0:
             adj = {k: v / remaining for k, v in adj.items()}

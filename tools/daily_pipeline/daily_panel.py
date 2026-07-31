@@ -81,9 +81,10 @@ def main():
 
     # 推送
     if args.push:
+        from datetime import date
         from trading_calendar import is_trading_day
         from feishu_push import push_signal_card
-        today = __import__('datetime').date.today()
+        today = date.today()
         if not is_trading_day(today):
             print(f"  [SKIP] {today} 不是交易日，跳过推送")
         else:
