@@ -9,5 +9,6 @@ InstOrderTrace 的数据获取统一接口。当前实现：
 from .base import DataProvider, DataProviderError
 from .akshare import AkShareProvider
 from .fallback import EastMoneyProvider
+from .baostock import BaoStockProvider
 
-__all__ = ["DataProvider", "DataProviderError", "AkShareProvider", "EastMoneyProvider"]
+__all__ = ["DataProvider", "DataProviderError", "AkShareProvider", "EastMoneyProvider", "BaoStockProvider"]

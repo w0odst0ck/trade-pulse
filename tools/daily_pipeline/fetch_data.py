@@ -28,7 +28,7 @@ PROVIDER_DIR = PROJECT_ROOT / "tools" / "data_provider"
 # 导入 Provider
 import sys
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-from data_provider import AkShareProvider, EastMoneyProvider
+from data_provider import AkShareProvider, EastMoneyProvider, BaoStockProvider
 
 
 def load_config() -> dict:
@@ -56,6 +56,7 @@ def get_provider(name: str = "akshare"):
     providers = {
         "akshare": AkShareProvider(),
         "eastmoney": EastMoneyProvider(),
+        "baostock": BaoStockProvider(),
     }
     return providers.get(name, providers["akshare"])
 
@@ -67,6 +68,14 @@ def fetch_data(
     provider_name: str = "akshare",
 ) -> pd.DataFrame:
     """拉取数据，自动增量更新"""
+    # 东财系（AkShare/EastMoney）走代理必失败（mihomo 规则拒绝），强制直连
+    os.environ.pop("http_proxy", None)
+    os.environ.pop("https_proxy", None)
+    os.environ.pop("all_proxy", None)
+    os.environ.pop("HTTP_PROXY", None)
+    os.environ.pop("HTTPS_PROXY", None)
+    os.environ.pop("ALL_PROXY", None)
+
     config = load_config()
     data_path = get_data_path(symbol)
     data_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,8 +107,8 @@ def fetch_data(
         if attempt < retries:
             time.sleep(config.get("retry_delay_sec", 3))
 
-    # 备用 Provider
-    fallbacks = ["eastmoney"] if provider_name == "akshare" else ["akshare"]
+    # 备用 Provider：东财系 → baostock（独立源灾备）
+    fallbacks = ["eastmoney", "baostock"] if provider_name == "akshare" else ["akshare", "baostock"]
     for fb_name in fallbacks:
         if df_new is not None and len(df_new) > 0:
             break
@@ -141,7 +150,7 @@ def main():
     parser = argparse.ArgumentParser(description="拉取 588000 + 000688 日线数据")
     parser.add_argument("--force", action="store_true", help="强制全量重拉")
     parser.add_argument("--start", default="2023-01-01", help="起始日期 (YYYY-MM-DD)")
-    parser.add_argument("--provider", default="akshare", choices=["akshare", "eastmoney"],
+    parser.add_argument("--provider", default="akshare", choices=["akshare", "eastmoney", "baostock"],
                         help="数据源")
     args = parser.parse_args()
 
