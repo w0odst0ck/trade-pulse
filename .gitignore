@@ -2,7 +2,13 @@ __pycache__/
 *.pyc
 .DS_Store
 data/
-docs/
+# Pages 部署：docs 目录整体排除，仅允许 UI 产物
+/docs/*
+!/docs/index.html
+!/docs/dashboard.html
+!/docs/assets/
+!/docs/assets/data.json
+!/docs/assets/common.js
 memory/
 项目目标.md
 项目计划.md
