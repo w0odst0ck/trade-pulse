@@ -81,9 +81,9 @@ def main():
             "date": str(latest.get("date", ""))[:10],
             "factors": {
                 k: round(float(latest.get(k, 0)), 3)
-                for k in ["momentum", "trend", "volume_price", "rsrs", "relative_strength"]
+                for k in ["momentum", "trend", "volume_price", "rsrs"]
             },
-            "factor_names": ["动量", "趋势", "量价", "RSRS", "比价"],
+            "factor_names": ["动量", "趋势", "量价", "RSRS"],
         },
         "equity": dicterize(equity) if not equity.empty else [],
         "prices": dicterize(daily.tail(200)) if not daily.empty else [],
@@ -133,7 +133,7 @@ var D = @DATA@;
 
 (function() {
   var a = document.getElementById('app');
-  var s = D.signal, f = s.factors, fn = s.factor_names, keys = ['momentum','trend','volume_price','rsrs','relative_strength'];
+  var s = D.signal, f = s.factors, fn = s.factor_names, keys = ['momentum','trend','volume_price','rsrs'];
   var st = {持仓:'bg-long',观望:'bg-wait',空仓:'bg-cash'}[s.state]||'bg-cash';
   var sl = s.state=='持仓'?'持有中':s.state=='观望'?'观望':'空仓';
   var sc = s.score;
@@ -302,8 +302,8 @@ function drawFactors(features) {
   var pw = W-pl-pr, ph = H-pt-pb;
   var xS = pw/(features.length-1||1);
 
-  var keys = ['momentum','trend','volume_price','rsrs','relative_strength'];
-  var names = ['动量','趋势','量价','RSRS','比价'];
+  var keys = ['momentum','trend','volume_price','rsrs'];
+  var names = ['动量','趋势','量价','RSRS'];
   var colors = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff'];
 
   for (var k=0;k<keys.length;k++) {

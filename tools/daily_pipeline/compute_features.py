@@ -300,14 +300,13 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
     features['weekly_modifier'] = weekly_modifier(compute_df, config)
     features['ma60_slope'] = ma60_slope(compute_df)
 
-    # 加权总分（不含波动率因子）
-    features['total_score'] = (
-        features['momentum'].fillna(0) * w['momentum'] +
-        features['trend'].fillna(0) * w['trend'] +
-        features['volume_price'].fillna(0) * w['volume_price'] +
-        features['rsrs'].fillna(0) * w['rsrs'] +
-        features['relative_strength'].fillna(0) * w['relative_strength']
-    )
+    # 加权总分（从 config 动态读取因子，不硬编码）
+    score_parts = [
+        features[f].fillna(0) * w[f]
+        for f in w.keys()
+        if f in features.columns
+    ]
+    features['total_score'] = sum(score_parts)
 
     # 合并缓存
     if not force and len(cached) > 0:
@@ -332,12 +331,11 @@ def get_latest_features(symbol: str) -> dict:
         'date': str(latest['date'].date()) if hasattr(latest['date'], 'date') else str(latest['date'])[:10],
         'momentum': round(latest.get('momentum', 0), 3),
         'trend': round(latest.get('trend', 0), 3),
-        'volatility': round(latest.get('volatility', 0), 3),
         'volume_price': round(latest.get('volume_price', 0), 3),
         'rsrs': round(latest.get('rsrs', 0), 3),
         'relative_strength': round(latest.get('relative_strength', 0), 3),
         'total_score': round(latest.get('total_score', 0), 3),
-        'weekly_can_trade': bool(latest.get('weekly_can_trade', True)),
+        'weekly_modifier': round(latest.get('weekly_modifier', 0), 3),
     }
 
 

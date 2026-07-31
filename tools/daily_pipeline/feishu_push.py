@@ -81,7 +81,7 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID):
     score = result.get('total_score', 0)
     explanation = result.get('explanation', '')
     weekly_mod = result.get('weekly_modifier', 0.0)
-    factors = result.get('factors', {})
+    factors = result.get('factors') or {}  # None 保护（default 只在 key 缺失时生效）
 
     # 因子表情映射
     def factor_indicator(val):
@@ -98,9 +98,11 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID):
     factor_names = {
         'momentum': '短期动量', 'trend': '中期趋势',
         'volume_price': '量价关系', 'rsrs': 'RSRS',
-        'relative_strength': '比价优势',
     }
+    # 只显示 result 中实际存在的因子（config 删掉的因子不展示）
     for key, name in factor_names.items():
+        if key not in factors:
+            continue
         val = factors.get(key, 0)
         if val is None:
             val = 0

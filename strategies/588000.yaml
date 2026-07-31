@@ -1,31 +1,32 @@
 # 588000 日线择时策略配置
-# 策略名：default — 均衡配置
+# 策略名：default — 精简因子配置
 # 权重总和 = 1.0
+# 2026-07-31 更新：前视偏差修正后，参数搜索 + 因子组合搜索确定
+#   - 移除 relative_strength（负贡献，去 rs 后夏普 0.649 最优）
+#   - 阈值 0.3/0.2 → 0.1/-0.07（前视修正后的最优）
 
-description: "均衡配置，六因子加权"
+description: "精简配置：动量+趋势+量价+RSRS 四因子"
 
 weights:
   momentum: 0.25          # 短期动量
   trend: 0.25             # 中期趋势
-  volatility: 0.10        # 波动率状态
-  volume_price: 0.15      # 量价关系
-  rsrs: 0.15              # 阻力支撑
-  relative_strength: 0.10 # 比价优势
+  volume_price: 0.25      # 量价关系
+  rsrs: 0.25              # 阻力支撑
 
 thresholds:
-  buy: 0.3                # 买入阈值
-  sell: -0.2              # 卖出阈值
+  buy: 0.1                # 买入阈值
+  sell: -0.07             # 卖出阈值
   confirm_days: 2         # 持仓→空仓确认天数
   weekly_filter_percentile: 0.2  # 周线过滤分位
 
 adaptive_thresholds:
   enabled: true
-  uptrend_buy: 0.2
-  uptrend_sell: -0.1
-  downtrend_buy: 0.4
-  downtrend_sell: -0.3
-  sideways_buy: 0.3
-  sideways_sell: -0.2
+  uptrend_buy: 0.1
+  uptrend_sell: -0.05
+  downtrend_buy: 0.15
+  downtrend_sell: -0.1
+  sideways_buy: 0.1
+  sideways_sell: -0.07
   ma60_slope_uptrend: 0.005
   ma60_slope_downtrend: -0.005
 

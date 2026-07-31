@@ -279,7 +279,6 @@ def print_panel(result: dict, verbose: bool = True):
     print(f"  中期趋势:     {f['trend']:+.2f}  {factor_arrow(f['trend'])} {factor_emoji(f['trend'])}")
     print(f"  量价关系:     {f['volume_price']:+.2f}  {factor_arrow(f['volume_price'])} {factor_emoji(f['volume_price'])}")
     print(f"  RSRS:         {f['rsrs']:+.2f}  {factor_arrow(f['rsrs'])} {factor_emoji(f['rsrs'])}")
-    print(f"  比价优势:     {f['relative_strength']:+.2f}  {factor_arrow(f['relative_strength'])} {factor_emoji(f['relative_strength'])}")
 
     print(f"  ─────────────────────────────")
     state = load_state()

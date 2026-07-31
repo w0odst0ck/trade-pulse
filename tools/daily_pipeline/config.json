@@ -4,26 +4,25 @@
   "provider": "akshare",
   "data_dir": "data",
   "weights": {
-    "momentum": 0.30,
-    "trend": 0.10,
+    "momentum": 0.25,
+    "trend": 0.25,
     "volume_price": 0.25,
-    "rsrs": 0.15,
-    "relative_strength": 0.20
+    "rsrs": 0.25
   },
   "thresholds": {
-    "buy": 0.3,
-    "sell": -0.2,
+    "buy": 0.1,
+    "sell": -0.07,
     "confirm_days": 2,
     "weekly_filter_percentile": 0.2
   },
   "adaptive_thresholds": {
     "enabled": true,
-    "uptrend_buy": 0.2,
-    "uptrend_sell": -0.1,
-    "downtrend_buy": 0.4,
-    "downtrend_sell": -0.3,
-    "sideways_buy": 0.3,
-    "sideways_sell": -0.2,
+    "uptrend_buy": 0.1,
+    "uptrend_sell": -0.05,
+    "downtrend_buy": 0.15,
+    "downtrend_sell": -0.1,
+    "sideways_buy": 0.1,
+    "sideways_sell": -0.07,
     "ma60_slope_uptrend": 0.005,
     "ma60_slope_downtrend": -0.005
   },
