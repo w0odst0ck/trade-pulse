@@ -19,9 +19,7 @@ CSV: data/trade_log.csv
 """
 
 import argparse
-import json
-import sys
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 import pandas as pd

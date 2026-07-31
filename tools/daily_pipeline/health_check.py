@@ -36,14 +36,33 @@ def is_weekend(d: date) -> bool:
     return d.weekday() >= 5
 
 
+def _latest_date(df: pd.DataFrame, path: Path):
+    """安全取最新日期：空表/缺列/解析失败 → 返回 None"""
+    if df is None or len(df) == 0:
+        return None
+    if "date" not in df.columns:
+        return None
+    try:
+        return pd.to_datetime(df["date"]).max()
+    except Exception:
+        return None
+
+
 def check_data_staleness() -> dict:
     """检查数据滞后"""
     path = DATA_DIR / "daily.csv"
     if not path.exists():
         return {"ok": False, "msg": "daily.csv 不存在"}
 
-    df = pd.read_csv(path, parse_dates=["date"])
-    latest = df["date"].max().date()
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        return {"ok": False, "msg": f"daily.csv 解析失败: {e}"}
+
+    latest = _latest_date(df, path)
+    if latest is None:
+        return {"ok": False, "msg": "daily.csv 为空或缺少 date 列"}
+    latest = latest.date()
     today = date.today()
 
     # 找最近一个交易日（跳过周末）
@@ -63,13 +82,32 @@ def check_data_staleness() -> dict:
 
 
 def check_features() -> dict:
-    """检查特征缓存"""
+    """检查特征缓存（含滞后检查）"""
     path = DATA_DIR / "features_cache.csv"
     if not path.exists():
         return {"ok": False, "msg": "features_cache.csv 不存在"}
-    df = pd.read_csv(path, parse_dates=["date"])
-    latest = df["date"].max().date()
-    return {"ok": True, "msg": f"特征最新 {latest}", "latest": str(latest)}
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        return {"ok": False, "msg": f"features_cache.csv 解析失败: {e}"}
+
+    latest = _latest_date(df, path)
+    if latest is None:
+        return {"ok": False, "msg": "features_cache.csv 为空或缺少 date 列"}
+    latest = latest.date()
+
+    # 滞后检查：与最近交易日对比，允许 2 天（特征跟着数据走）
+    cursor = date.today()
+    while is_weekend(cursor):
+        cursor = date.fromordinal(cursor.toordinal() - 1)
+    lag_days = (cursor - latest).days
+    ok = lag_days <= 2
+    return {
+        "ok": ok,
+        "msg": f"特征最新 {latest}（滞后 {lag_days} 天）",
+        "latest": str(latest),
+        "lag_days": lag_days,
+    }
 
 
 def check_data_json() -> dict:
