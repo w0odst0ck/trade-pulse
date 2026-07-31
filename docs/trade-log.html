@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>trade-pulse 交易记录</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,Segoe UI,system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px;max-width:1000px;margin:0 auto}
+h1{font-size:20px;font-weight:600}
+.card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:16px}
+h2{font-size:14px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:6px 8px;color:#8b949e;font-weight:400;border-bottom:1px solid #30363d}
+td{padding:6px 8px;border-bottom:1px solid #21262d}
+.tb{color:#3fb950}.ts{color:#f85149}.th{color:#d29922}
+.stat{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:720px){.stat{grid-template-columns:repeat(2,1fr)}}
+.si{background:#0d1117;border-radius:8px;padding:14px;text-align:center}
+.sn{font-size:12px;color:#8b949e}.sv{font-size:22px;font-weight:700;margin-top:4px}
+.err{color:#f85149;text-align:center;padding:40px 0;font-size:14px}
+.ft{text-align:center;color:#484f58;font-size:12px;padding:20px 0}
+</style>
+</head>
+<body>
+<div id="app"><div class="err">加载中...</div></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+fetch('assets/data.json?t='+Date.now())
+  .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+  .then(render)
+  .catch(function(e){document.getElementById('app').innerHTML='<div class="err">数据加载失败: '+esc(e.message)+'</div>';});
+
+function render(D){
+  var a=document.getElementById('app');
+  var log=D.trade_log||[];
+  var empty=log.length===0;
+  // 空时用回测交易占位
+  if(empty) log=D.trades||[];
+  var h='';
+  h+='<div class="card"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">';
+  h+='<h1>trade-pulse 交易记录</h1><span style="color:#8b949e;font-size:13px">生成 '+esc(D.generated_at)+'</span></div>';
+  h+='<div style="margin-top:6px;font-size:12px;color:#484f58">'+(empty?'当前显示回测交易（实盘记录为空，开跑后自动切换）':'实盘决策留痕')+'</div></div>';
+
+  // 统计卡
+  var closed=log.filter(function(t){return t.exit_price&&t.exit_price!=0;});
+  var wins=closed.filter(function(t){return parseFloat(t.pnl_pct)>0;});
+  var losses=closed.filter(function(t){return parseFloat(t.pnl_pct)<0;});
+  var winRate=closed.length?Math.round(wins.length/closed.length*100):0;
+  var avgWin=wins.length?wins.reduce(function(s,t){return s+parseFloat(t.pnl_pct);},0)/wins.length:0;
+  var avgLoss=losses.length?losses.reduce(function(s,t){return s+parseFloat(t.pnl_pct);},0)/losses.length:0;
+  var plRatio=avgLoss?Math.abs(avgWin/avgLoss):0;
+
+  h+='<div class="card"><h2>统计</h2><div class="stat">';
+  h+='<div class="si"><div class="sn">总记录</div><div class="sv">'+log.length+'</div></div>';
+  h+='<div class="si"><div class="sn">已平仓</div><div class="sv">'+closed.length+'</div></div>';
+  h+='<div class="si"><div class="sn">胜率</div><div class="sv">'+winRate+'%</div></div>';
+  h+='<div class="si"><div class="sn">盈亏比</div><div class="sv">'+plRatio.toFixed(2)+'</div></div>';
+  h+='</div></div>';
+
+  // 记录表
+  h+='<div class="card"><h2>'+(empty?'回测交易（占位）':'交易记录')+'</h2><table><tr><th>日期</th><th>标的</th><th>操作</th><th>分数</th><th>仓位%</th><th>入场</th><th>出场</th><th>盈亏%</th><th>备注</th></tr>';
+  for(var i=0;i<log.length;i++){
+    var t=log[i];
+    var cls=t.action=='买入'||t.action=='加仓'?'tb':t.action=='卖出'||t.action=='清仓'?'ts':'th';
+    var pnl=parseFloat(t.pnl_pct)||0;
+    var pnlCls=pnl>0?'tb':pnl<0?'ts':'';
+    h+='<tr><td>'+esc(t.date||'')+'</td><td>'+esc(t.symbol||'')+'</td>'
+      +'<td class="'+cls+'">'+esc(t.action||'')+'</td>'
+      +'<td>'+esc(t.score||'')+'</td><td>'+esc(t.position_pct||'')+'</td>'
+      +'<td>'+esc(t.entry_price||'')+'</td><td>'+esc(t.exit_price||'')+'</td>'
+      +'<td class="'+pnlCls+'">'+pnl.toFixed(2)+'</td>'
+      +'<td style="color:#8b949e;font-size:12px">'+esc(t.note||'')+'</td></tr>';
+  }
+  h+='</table></div>';
+  h+='<div class="ft">trade-pulse &#183; 数据生成 '+esc(D.generated_at)+'</div>';
+  a.innerHTML=h;
+}
+</script>
+</body>
+</html>

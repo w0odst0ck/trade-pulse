@@ -125,6 +125,9 @@ def main():
     if not step("生成信号面板", [sys.executable, str(SCRIPT_DIR / "gen_dashboard.py")]):
         sys.exit(1)
 
+    if not step("生成交易记录页", [sys.executable, str(SCRIPT_DIR / "gen_tradelog.py")]):
+        sys.exit(1)
+
     if not gen_index():
         sys.exit(1)
 

@@ -49,6 +49,7 @@ def build_data() -> dict:
     features = load_csv(DATA_DIR / "features_cache.csv")
     equity = load_csv(DATA_DIR / "backtest" / "equity_curve.csv")
     trades = load_csv(DATA_DIR / "backtest" / "trades.csv")
+    trade_log = load_csv(PROJECT_ROOT / "data" / "trade_log.csv")
 
     latest = features[-1] if features else {}
     sig_state = state.get("state", "空仓")
@@ -71,7 +72,8 @@ def build_data() -> dict:
         "equity": equity[-300:],      # 最近 300 天权益
         "prices": daily[-200:],       # 最近 200 天价格
         "features": features[-60:],   # 最近 60 天特征
-        "trades": trades[-15:],       # 最近 15 笔交易
+        "trades": trades[-15:],       # 最近 15 笔回测交易
+        "trade_log": trade_log[-30:], # 最近 30 条实盘记录（决策留痕）
     }
     return data
 

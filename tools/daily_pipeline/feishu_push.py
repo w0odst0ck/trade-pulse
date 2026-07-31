@@ -207,6 +207,29 @@ def push_multi_panel(results: list, to_chat_id: str = CHAT_ID):
     return data
 
 
+def push_text(text: str, to_chat_id: str = CHAT_ID):
+    """推送纯文本消息（告警/通知用）"""
+    token = get_tenant_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    message = {
+        "receive_id": to_chat_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": text}),
+    }
+    resp = requests.post(
+        f"{API_BASE}/im/v1/messages?receive_id_type=chat_id",
+        headers=headers, json=message, timeout=15,
+    )
+    data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"飞书推送失败: {data}")
+    print(f"  [PUSH] 文本已推送 ✅")
+    return data
+
+
 def test_push():
     """发送测试消息"""
     result = {
