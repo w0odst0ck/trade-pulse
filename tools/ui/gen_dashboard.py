@@ -271,13 +271,23 @@ def main():
 
     if args.serve:
         # file:// 下 fetch 被浏览器拦截，必须走 http server
+        import webbrowser
         os.chdir(OUT_DIR)
         port = 8899
-        handler = http.server.SimpleHTTPRequestHandler
-        httpd = socketserver.TCPServer(("127.0.0.1", port), handler)
+        # 端口被占用时自动换端口
+        for p in range(port, port + 20):
+            try:
+                httpd = socketserver.TCPServer(("127.0.0.1", p), http.server.SimpleHTTPRequestHandler)
+                port = p
+                break
+            except OSError:
+                continue
+        else:
+            print("  [ERR] 8899-8918 端口均被占用，无法启动预览 server")
+            sys.exit(1)
         url = f"http://127.0.0.1:{port}/index.html"
         print(f"  [SERVE] 本地预览: {url}  (Ctrl+C 停止)")
-        threading.Timer(1.0, lambda: subprocess.run(["xdg-open", url], check=False) if sys.platform == "linux" else None).start()
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
