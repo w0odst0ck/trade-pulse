@@ -1,0 +1,55 @@
+# 588000 日线择时策略配置
+# 策略名：default — 均衡配置
+# 权重总和 = 1.0
+
+description: "均衡配置，六因子加权"
+
+weights:
+  momentum: 0.25          # 短期动量
+  trend: 0.25             # 中期趋势
+  volatility: 0.10        # 波动率状态
+  volume_price: 0.15      # 量价关系
+  rsrs: 0.15              # 阻力支撑
+  relative_strength: 0.10 # 比价优势
+
+thresholds:
+  buy: 0.3                # 买入阈值
+  sell: -0.2              # 卖出阈值
+  confirm_days: 2         # 持仓→空仓确认天数
+  weekly_filter_percentile: 0.2  # 周线过滤分位
+
+adaptive_thresholds:
+  enabled: true
+  uptrend_buy: 0.2
+  uptrend_sell: -0.1
+  downtrend_buy: 0.4
+  downtrend_sell: -0.3
+  sideways_buy: 0.3
+  sideways_sell: -0.2
+  ma60_slope_uptrend: 0.005
+  ma60_slope_downtrend: -0.005
+
+weekly_modifier:
+  enabled: true
+  min_modifier: -0.3
+  max_modifier: 0.3
+  ma_percentile_low: 0.1
+  ma_percentile_high: 0.9
+
+# 窗口参数
+windows:
+  momentum_window: 5
+  trend_window: 20
+  atr_window: 14
+  rsrs_window: 18
+  rel_strength_window: 20
+  hist_window: 60
+  weekly_slope_window: 5
+
+# 数据配置
+data:
+  provider: akshare
+  symbol: "588000"
+  benchmark: "000688"
+  retry_count: 2
+  retry_delay_sec: 3

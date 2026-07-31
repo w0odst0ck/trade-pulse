@@ -209,8 +209,12 @@ def relative_strength_score(df: pd.DataFrame, df_bench: pd.DataFrame, window: in
     return final['score']
 
 
-def weekly_filter(df: pd.DataFrame, percentile: float = 0.2) -> pd.Series:
-    """大周期过滤：周线 MA20 斜率是否处于最低 20% → True=可交易"""
+def weekly_modifier(df: pd.DataFrame, config: dict) -> pd.Series:
+    """周线调节分：MA20 斜率分位 → [-0.3, +0.3]，替代二进制过滤"""
+    wm = config.get('weekly_modifier', {})
+    min_mod = wm.get('min_modifier', -0.3)
+    max_mod = wm.get('max_modifier', 0.3)
+
     df_weekly = df.set_index('date').resample('W-FRI').agg({
         'open': 'first', 'high': 'max', 'low': 'min',
         'close': 'last', 'volume': 'sum', 'amount': 'sum'
@@ -219,27 +223,34 @@ def weekly_filter(df: pd.DataFrame, percentile: float = 0.2) -> pd.Series:
     df_weekly['ma20'] = df_weekly['close'].rolling(20).mean()
     df_weekly['ma20_slope'] = df_weekly['ma20'].pct_change(5)
 
-    result = pd.Series(True, index=df_weekly.index)
+    result = pd.Series(0.0, index=df_weekly.index)
     for i in range(25, len(df_weekly)):
         hist = df_weekly['ma20_slope'].iloc[i - 20: i].dropna()
         if len(hist) < 5:
             continue
-        threshold = hist.quantile(percentile)
         val = df_weekly['ma20_slope'].iloc[i]
-        if val < threshold:
-            result.iloc[i] = False
+        # 分位 → 调节分
+        rank = (hist < val).sum()
+        pct = rank / len(hist)
+        modifier = min_mod + (max_mod - min_mod) * pct
+        result.iloc[i] = round(modifier, 3)
 
-    df_weekly['can_trade'] = result
+    # 映射回日线（用 period 字符串对齐，避免 resample 周五 vs to_period 周一不匹配）
+    df_weekly['modifier'] = result.values
+    df_weekly['week_period'] = pd.to_datetime(df_weekly['date']).dt.to_period('W-FRI').astype(str)
+    weekly_map = df_weekly.set_index('week_period')['modifier'].to_dict()
+    df_daily = df[['date']].copy()
+    df_daily['week_period'] = pd.to_datetime(df_daily['date']).dt.to_period('W-FRI').astype(str)
+    filled = df_daily['week_period'].map(weekly_map).fillna(0.0)
 
-    # 映射回去：周线结果给每天的最后一根用
-    daily_result = pd.Series(True, index=df.index)
-    df_with_week = df[['date']].copy()
-    df_with_week['week_label'] = pd.to_datetime(df['date']).dt.to_period('W-FRI').dt.to_timestamp()
-    weekly_map = df_weekly.set_index('date')['can_trade'].to_dict()
-    mask = df_with_week['week_label'].map(weekly_map).fillna(True)
-    daily_result = mask.values
+    return filled.values
 
-    return daily_result
+
+def ma60_slope(df: pd.DataFrame) -> pd.Series:
+    """MA60 斜率，用于自适应阈值判断"""
+    ma60 = df['close'].rolling(60).mean()
+    slope = ma60.pct_change(5)
+    return slope
 
 
 def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: dict,
@@ -281,17 +292,16 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
     features = compute_df[['date', 'close', 'volume']].copy()
     features['momentum'] = momentum_score(compute_df, windows['momentum'])
     features['trend'] = trend_score(compute_df, windows['trend'])
-    features['volatility'] = volatility_score(compute_df, windows['atr'])
     features['volume_price'] = volume_price_score(compute_df)
     features['rsrs'] = rsrs_score(compute_df, windows['rsrs'])
     features['relative_strength'] = relative_strength_score(compute_df, df_bench, windows['rel_strength'])
-    features['weekly_can_trade'] = weekly_filter(compute_df, config['thresholds']['weekly_filter_percentile'])
+    features['weekly_modifier'] = weekly_modifier(compute_df, config)
+    features['ma60_slope'] = ma60_slope(compute_df)
 
-    # 加权总分
+    # 加权总分（不含波动率因子）
     features['total_score'] = (
         features['momentum'].fillna(0) * w['momentum'] +
         features['trend'].fillna(0) * w['trend'] +
-        features['volatility'].fillna(0) * w['volatility'] +
         features['volume_price'].fillna(0) * w['volume_price'] +
         features['rsrs'].fillna(0) * w['rsrs'] +
         features['relative_strength'].fillna(0) * w['relative_strength']

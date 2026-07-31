@@ -33,6 +33,7 @@ def main():
     parser.add_argument('--force-features', action='store_true', help='全量重算特征')
     parser.add_argument('--json', action='store_true', help='以 JSON 格式输出（供程序消费）')
     parser.add_argument('--reset', action='store_true', help='重置状态机为空仓')
+    parser.add_argument('--push', action='store_true', help='推送结果到飞书')
     args = parser.parse_args()
 
     config = load_config()
@@ -77,6 +78,16 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print_panel(result, verbose=True)
+
+    # 推送
+    if args.push:
+        from trading_calendar import is_trading_day
+        from feishu_push import push_signal_card
+        today = __import__('datetime').date.today()
+        if not is_trading_day(today):
+            print(f"  [SKIP] {today} 不是交易日，跳过推送")
+        else:
+            push_signal_card(result)
 
 
 if __name__ == '__main__':

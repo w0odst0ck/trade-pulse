@@ -66,18 +66,68 @@ def factor_arrow(score: float) -> str:
     return '↓'
 
 
-def decide(latest_features: dict, historical_features) -> dict:
-    """状态机决策主逻辑"""
-    config = load_config()
-    state = load_state()
-    thresholds = config['thresholds']
+def get_adaptive_thresholds(config: dict, latest_features: dict) -> dict:
+    """根据 MA60 斜率自适应选择阈值"""
+    at = config.get('adaptive_thresholds', {})
+    if not at.get('enabled', False):
+        return config['thresholds']
 
-    total_score = latest_features.get('total_score', 0)
-    can_trade = latest_features.get('weekly_can_trade', True)
+    ma60_sl = latest_features.get('ma60_slope', 0)
+    if ma60_sl is None or ma60_sl != ma60_sl:  # 仅捕获 None 和 NaN，0 是合法值
+        return config['thresholds']
 
+    base = config['thresholds']
+    if ma60_sl > at.get('ma60_slope_uptrend', 0.005):
+        return {
+            'buy': at.get('uptrend_buy', 0.2),
+            'sell': at.get('uptrend_sell', -0.1),
+            'confirm_days': base.get('confirm_days', 2),
+            'weekly_filter_percentile': base.get('weekly_filter_percentile', 0.2),
+        }
+    elif ma60_sl < at.get('ma60_slope_downtrend', -0.005):
+        return {
+            'buy': at.get('downtrend_buy', 0.4),
+            'sell': at.get('downtrend_sell', -0.3),
+            'confirm_days': base.get('confirm_days', 2),
+            'weekly_filter_percentile': base.get('weekly_filter_percentile', 0.2),
+        }
+    else:
+        return {
+            'buy': at.get('sideways_buy', 0.3),
+            'sell': at.get('sideways_sell', -0.2),
+            'confirm_days': base.get('confirm_days', 2),
+            'weekly_filter_percentile': base.get('weekly_filter_percentile', 0.2),
+        }
+
+
+def decide(latest_features: dict, historical_features, state_override=None, persist=True, config_override=None) -> dict:
+    """状态机决策主逻辑
+
+    Parameters
+    ----------
+    state_override : dict or None
+        传入状态字典时回测模式，不读文件。None=正常模式读 state.json
+    persist : bool
+        是否将状态持久化到文件。回测模式=False
+    config_override : dict or None
+        传入配置字典时使用该配置，否则读 config.json
+    """
+    config = config_override if config_override is not None else load_config()
+    state = load_state() if state_override is None else state_override
+
+    # 自适应阈值
+    thresholds = get_adaptive_thresholds(config, latest_features)
     buy_th = thresholds['buy']
     sell_th = thresholds['sell']
     confirm_days = thresholds.get('confirm_days', 2)
+
+    # 连续周线调节分（替代二进制过滤）
+    total_score = latest_features.get('total_score', 0)
+    weekly_mod = latest_features.get('weekly_modifier', 0.0)
+    adjusted_score = total_score + weekly_mod
+
+    if adjusted_score is None or adjusted_score != adjusted_score:  # NaN check
+        adjusted_score = total_score
 
     current_state = state['state']
     waiting_days = state.get('waiting_days', 0)
@@ -93,48 +143,38 @@ def decide(latest_features: dict, historical_features) -> dict:
     # 不是新的交易日的决策不更新状态
     if last_date == today_str:
         print(f"  [INFO] 今日已决策过，跳过")
-        return _build_result(
+        result = _build_result(
             state['state'], total_score,
             '持有' if state['state'] == '持仓' else '等待',
             '今日已决策，沿用昨日',
             latest_features, config
         )
+        if not persist:
+            result['_new_state'] = state
+        return result
 
     new_state = current_state
     action = '不动'
     explanation = ''
 
-    # --- 周线过滤 ---
-    if not can_trade:
-        new_state = '空仓'
-        action = '卖出/空仓'
-        explanation = '周线走弱，禁止交易'
-        state_update = {
-            'state': '空仓',
-            'waiting_days': 0,
-            'last_decision_date': today_str,
-        }
-        save_state(state_update)
-        return _build_result(new_state, total_score, action, explanation, latest_features, config)
+    # --- 状态机逻辑（使用 adjusted_score，已含周线调节分） ---
 
-    # --- 状态机逻辑 ---
-
-    # 空仓 → 持仓：总分 > 买入阈值，即时切换
+    # 空仓 → 持仓：调整后总分 > 买入阈值，即时切换
     if current_state == '空仓':
-        if total_score > buy_th:
+        if adjusted_score > buy_th:
             new_state = '持仓'
             action = '买入（试仓）'
-            explanation = f'空仓转持仓：总分 {total_score:.2f} > {buy_th}'
-        elif total_score > sell_th:
+            explanation = f'空仓转持仓：调整分 {adjusted_score:.2f} > {buy_th}'
+        elif adjusted_score > sell_th:
             action = '等待'
-            explanation = f'空仓观望：总分 {total_score:.2f} 未达买入阈值'
+            explanation = f'空仓观望：调整分 {adjusted_score:.2f} 未达买入阈值'
         else:
             action = '等待'
             explanation = f'空仓观望：市场偏空'
 
     # 持仓 → 空仓：需要连续确认
     elif current_state == '持仓':
-        if total_score < sell_th:
+        if adjusted_score < sell_th:
             waiting_days += 1
             if waiting_days >= confirm_days:
                 new_state = '空仓'
@@ -145,11 +185,11 @@ def decide(latest_features: dict, historical_features) -> dict:
                 new_state = '持仓'  # 仍保持持仓
                 action = '持有观察'
                 explanation = f'信号偏空（第 {waiting_days}/{confirm_days} 天确认），暂持'
-        elif total_score < buy_th:
+        elif adjusted_score < buy_th:
             # 持仓 → 观望
             new_state = '观望'
             action = '减仓观望'
-            explanation = f'总分 {total_score:.2f} 回落至模糊区，减仓观察'
+            explanation = f'调整分 {adjusted_score:.2f} 回落至模糊区，减仓观察'
             waiting_days = 0
         else:
             new_state = '持仓'
@@ -159,15 +199,15 @@ def decide(latest_features: dict, historical_features) -> dict:
 
     # 观望 → 持仓 或 观望 → 空仓
     elif current_state == '观望':
-        if total_score > buy_th:
+        if adjusted_score > buy_th:
             new_state = '持仓'
             action = '买入加仓'
-            explanation = f'观望转持仓：总分 {total_score:.2f} 回升'
+            explanation = f'观望转持仓：调整分 {adjusted_score:.2f} 回升'
             waiting_days = 0
-        elif total_score < sell_th:
+        elif adjusted_score < sell_th:
             new_state = '空仓'
             action = '卖出'
-            explanation = f'观望转空仓：总分 {total_score:.2f} 偏空'
+            explanation = f'观望转空仓：调整分 {adjusted_score:.2f} 偏空'
             waiting_days = 0
         else:
             action = '继续观望'
@@ -190,10 +230,14 @@ def decide(latest_features: dict, historical_features) -> dict:
         'waiting_days': waiting_days,
         'last_decision_date': today_str,
     }
-    save_state(state_update)
+    if persist:
+        save_state(state_update)
 
-    return _build_result(new_state, total_score, action, explanation,
-                         latest_features, config, position)
+    result = _build_result(new_state, total_score, action, explanation,
+                           latest_features, config, position)
+    if not persist:
+        result['_new_state'] = state_update
+    return result
 
 
 def _build_result(state: str, score: float, action: str, explanation: str,
@@ -205,7 +249,7 @@ def _build_result(state: str, score: float, action: str, explanation: str,
         'action': action,
         'explanation': explanation,
         'position': f"{position * 100:.0f}%",
-        'weekly_filter_pass': features.get('weekly_can_trade', True),
+        'weekly_modifier': features.get('weekly_modifier', 0.0),
         'factors': {
             'momentum': features.get('momentum', 0),
             'trend': features.get('trend', 0),
@@ -224,9 +268,10 @@ def print_panel(result: dict, verbose: bool = True):
     print(f"  588000 日线信号面板 — {date_str}")
     print(f"{'=' * 50}")
 
-    # 大周期过滤
-    wf = result['weekly_filter_pass']
-    print(f"  大周期过滤: {'✅ 允许交易' if wf else '⛔️ 禁止交易'}")
+    # 周线调节分
+    wm = result.get('weekly_modifier', 0.0)
+    wm_str = f'{wm:+.2f}' if wm != 0 else '0.00'
+    print(f"  周线调节: {wm_str} （修正总分 {result['total_score']:+.2f} → {result['total_score']+wm:+.2f}）")
 
     # 各因子
     f = result['factors']
