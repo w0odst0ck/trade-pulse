@@ -6,6 +6,7 @@ data/
 /docs/*
 !/docs/index.html
 !/docs/dashboard.html
+!/docs/.nojekyll
 !/docs/assets/
 !/docs/assets/data.json
 !/docs/assets/common.js
