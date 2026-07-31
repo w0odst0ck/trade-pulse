@@ -20,3 +20,4 @@ tools/ui/dashboard.html
 # 嵌套仓库：Kronos 独立 git，不入主仓库
 /tools/kronos/
 /tools/level2-toolkit/
+/tools/portfolio_opt/.venv/
