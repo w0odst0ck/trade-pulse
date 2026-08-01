@@ -163,6 +163,7 @@ def run_backtest(
                             'entry_date': tomorrow_date,
                             'entry_price': tomorrow_close,
                             'entry_value': gap_value,
+                            'entry_shares': gap_value / tomorrow_close,  # 批次份额（LIFO 扣减用）
                             'exit_date': None,
                             'exit_price': None,
                             'exit_value': None,
@@ -183,19 +184,36 @@ def run_backtest(
                         holding_value = holding_shares * tomorrow_close
 
                         is_full_close = target_pct < 1e-6
-                        # 配对最近一笔未平仓买入
+                        action = '清仓' if is_full_close else '减仓'
+
+                        # LIFO 扣减未平仓批次：从最近一笔买入/加仓开始扣份额
+                        remaining = sell_shares
                         for j in range(len(trades) - 1, -1, -1):
                             t = trades[j]
-                            if t['action'] == '买入' and t['exit_date'] is None:
-                                if is_full_close:
-                                    ret = (sell_value - t['entry_value']) / t['entry_value']
-                                    t['exit_date'] = tomorrow_date
-                                    t['exit_price'] = tomorrow_close
-                                    t['exit_value'] = sell_value
-                                    t['return'] = ret
+                            if t['action'] not in ('买入', '加仓'):
+                                continue
+                            if t['exit_date'] is not None:
+                                continue
+                            lot = t.get('entry_shares', t['entry_value'] / t['entry_price'])
+                            if lot <= 1e-12:
+                                continue
+                            if remaining >= lot - 1e-12:
+                                # 整个批次卖完 → 闭合，收益按价格算
+                                remaining -= lot
+                                t['exit_date'] = tomorrow_date
+                                t['exit_price'] = tomorrow_close
+                                t['exit_value'] = lot * tomorrow_close
+                                t['return'] = (tomorrow_close - t['entry_price']) / t['entry_price']
+                                # 保留原始份额与 entry_value 自洽（exit_date 已置，后续循环跳过）
+                            else:
+                                # 部分卖出：批次剩余份额减少，不闭合
+                                t['entry_shares'] = lot - remaining
+                                # 保持记录自洽：entry_value 同步剩余份额的成本
+                                t['entry_value'] = t['entry_shares'] * t['entry_price']
+                                remaining = 0.0
+                            if remaining <= 1e-12:
                                 break
 
-                        action = '清仓' if is_full_close else '减仓'
                         trades.append({
                             'action': action,
                             'entry_date': tomorrow_date,
@@ -240,7 +258,7 @@ def run_backtest(
         })
 
     trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(
-        columns=['action', 'entry_date', 'entry_price', 'entry_value',
+        columns=['action', 'entry_date', 'entry_price', 'entry_value', 'entry_shares',
                  'exit_date', 'exit_price', 'exit_value', 'return',
                  'signal_date', 'signal_score']
     )
@@ -398,9 +416,9 @@ def compute_metrics(
         has_entry_exit = all(c in trades_df.columns for c in ['exit_date', 'entry_date', 'return'])
 
         if has_entry_exit:
-            # 只统计有完整进出记录的买卖（排除减半仓/试仓）
+            # 统计所有完整闭合的建仓批次（买入/加仓，有 exit 记录）
             complete = trades_df[
-                trades_df['action'].isin(['买入'])
+                trades_df['action'].isin(['买入', '加仓'])
                 & trades_df['exit_date'].notna()
             ]
             if len(complete) > 0:
@@ -412,9 +430,13 @@ def compute_metrics(
                 avg_loss = abs(losses.mean()) if len(losses) > 0 else 1
                 profit_loss_ratio = min(avg_win / avg_loss, 100.0) if avg_loss > 1e-3 else 0
 
-            trade_count = len(trades_df[trades_df['action'].isin(['买入', '加仓'])])
-            # 平均持仓天数
-            with_exit = trades_df[trades_df['exit_date'].notna() & trades_df['entry_date'].notna()].copy()
+            trade_count = len(complete) if len(complete) > 0 else len(trades_df[trades_df['action'].isin(['买入', '加仓'])])
+            # 平均持仓天数（仅建仓批次）
+            with_exit = trades_df[
+                trades_df['action'].isin(['买入', '加仓'])
+                & trades_df['exit_date'].notna()
+                & trades_df['entry_date'].notna()
+            ].copy()
             if len(with_exit) > 0:
                 hold_days = (pd.to_datetime(with_exit['exit_date']) - pd.to_datetime(with_exit['entry_date'])).dt.days
                 avg_hold_days = float(hold_days.mean())
