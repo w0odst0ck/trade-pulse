@@ -37,6 +37,35 @@ def load_csv(path: Path):
         return []
 
 
+def map_backtest_trades(records: list) -> list:
+    """把回测 trades 映射为 trade_log 的展示 schema（占位模式前端统一读取）
+
+    trade_log 列: date/symbol/action/score/position_pct/entry_price/exit_price/pnl_pct/note
+    backtest 列: action/entry_date/entry_price/.../exit_date/exit_price/return/signal_score
+    只有已平仓批次（exit_date 非空）才展示盈亏，未平仓批次 pnl_pct 留空。
+    """
+    out = []
+    for r in records:
+        closed = r.get("exit_date") is not None and str(r.get("exit_date", "")) != ""
+        pnl = None
+        if closed:
+            ret = r.get("return")
+            if isinstance(ret, (int, float)) and ret == ret:  # 非 NaN
+                pnl = round(float(ret) * 100, 2)
+        out.append({
+            "date": str(r.get("entry_date", ""))[:10],
+            "symbol": "588000",
+            "action": r.get("action", ""),
+            "score": r.get("signal_score"),
+            "position_pct": r.get("entry_value"),
+            "entry_price": r.get("entry_price"),
+            "exit_price": r.get("exit_price") if closed else None,
+            "pnl_pct": pnl,
+            "note": "",
+        })
+    return out
+
+
 def build_data() -> dict:
     import pandas as pd
 
@@ -72,7 +101,7 @@ def build_data() -> dict:
         "equity": equity[-300:],      # 最近 300 天权益
         "prices": daily[-200:],       # 最近 200 天价格
         "features": features[-60:],   # 最近 60 天特征
-        "trades": trades[-15:],       # 最近 15 笔回测交易
+        "trades": map_backtest_trades(trades[-15:]),  # 最近 15 笔回测交易（映射为展示 schema）
         "trade_log": trade_log[-30:], # 最近 30 条实盘记录（决策留痕）
     }
     return data
