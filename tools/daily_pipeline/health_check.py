@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from data_quality import scan_quality
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "588000"
 DOCS_DIR = PROJECT_ROOT / "docs"
@@ -127,6 +129,22 @@ def check_data_json() -> dict:
         return {"ok": False, "msg": f"data.json 解析失败: {e}"}
 
 
+def check_data_quality() -> dict:
+    """检查存量数据质量：跳空残留 / NaN 残留（与 fetch 时拦截同判据）"""
+    path = DATA_DIR / "daily.csv"
+    if not path.exists():
+        return {"ok": False, "msg": "daily.csv 不存在"}
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        return {"ok": False, "msg": f"daily.csv 解析失败: {e}"}
+
+    problems = scan_quality(df, symbol="588000")
+    if problems:
+        return {"ok": False, "msg": "; ".join(problems)}
+    return {"ok": True, "msg": "数据质量正常（无跳空/NaN 残留）"}
+
+
 def check_state() -> dict:
     """检查状态机"""
     path = DATA_DIR / "state.json"
@@ -166,6 +184,7 @@ def main():
         "features": check_features(),
         "data_json": check_data_json(),
         "state": check_state(),
+        "quality": check_data_quality(),
         "git": check_git(),
     }
 

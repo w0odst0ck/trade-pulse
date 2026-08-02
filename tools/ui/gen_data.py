@@ -80,6 +80,16 @@ def build_data() -> dict:
     trades = load_csv(DATA_DIR / "backtest" / "trades.csv")
     trade_log = load_csv(PROJECT_ROOT / "data" / "trade_log.csv")
 
+    # 绩效指标（backtest 输出 metrics.json；不存在则不展示）
+    metrics = {}
+    metrics_path = DATA_DIR / "backtest" / "metrics.json"
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, encoding="utf-8") as f:
+                metrics = json.load(f)
+        except Exception as e:
+            print(f"  [WARN] 读取 metrics.json 失败: {e}")
+
     latest = features[-1] if features else {}
     sig_state = state.get("state", "空仓")
 
@@ -103,6 +113,7 @@ def build_data() -> dict:
         "features": features[-60:],   # 最近 60 天特征
         "trades": map_backtest_trades(trades[-15:]),  # 最近 15 笔回测交易（映射为展示 schema）
         "trade_log": trade_log[-30:], # 最近 30 条实盘记录（决策留痕）
+        "metrics": metrics,           # 回测绩效指标（sortino/omega/max_dd_duration 等）
     }
     return data
 

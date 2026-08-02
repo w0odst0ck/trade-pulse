@@ -829,8 +829,8 @@ def print_report(
     print(f"\n{'═' * 55}\n")
 
 
-def save_outputs(result: dict, bh_equity: pd.DataFrame, output_dir: str):
-    """保存 CSV"""
+def save_outputs(result: dict, bh_equity: pd.DataFrame, output_dir: str, metrics: Optional[dict] = None):
+    """保存 CSV + metrics.json"""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -847,6 +847,14 @@ def save_outputs(result: dict, bh_equity: pd.DataFrame, output_dir: str):
             eq = eq.merge(bh_equity, on='date', how='left')
         eq.to_csv(out / 'equity_curve.csv', index=False)
         print(f"  [SAVE] 权益曲线 → {out / 'equity_curve.csv'} ({len(eq)} 条)")
+
+    # 绩效指标持久化（dashboard / gen_data 消费）
+    if metrics:
+        m = {k: (None if v != v else v) for k, v in metrics.items()}  # NaN → None
+        metrics_path = out / 'metrics.json'
+        with open(metrics_path, 'w', encoding='utf-8') as f:
+            json.dump(m, f, ensure_ascii=False, indent=2)
+        print(f"  [SAVE] 绩效指标 → {metrics_path}")
 
 
 # ── 主入口 ──────────────────────────────────────────────
@@ -953,7 +961,7 @@ def main():
         print_regime_report(regime_results, bh_metrics)
 
     # ── 保存 ──
-    save_outputs(result, bh_df if len(bh_df) > 0 else None, output_dir)
+    save_outputs(result, bh_df if len(bh_df) > 0 else None, output_dir, metrics=metrics)
 
     print(f"  [DONE] 回测完成。最终净值: {result['final_value']:.6f}")
     if len(trades_df) > 0:

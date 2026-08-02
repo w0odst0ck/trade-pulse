@@ -11,6 +11,12 @@ h1{font-size:20px;font-weight:600}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:20px;margin-bottom:16px}
 h2{font-size:14px;color:#8b949e;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px}
 .sg{display:grid;grid-template-columns:auto 1fr;gap:8px 24px;font-size:15px}
+.mg{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.mi{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:10px 12px}
+.mil{display:block;font-size:12px;color:#8b949e;margin-bottom:4px}
+.miv{display:block;font-size:17px;font-weight:600}
+.miv.up{color:#3fb950}.miv.dn{color:#f85149}.miv.md{color:#d29922}
+@media(max-width:720px){.mg{grid-template-columns:repeat(2,1fr)}}
 .sl{color:#8b949e}.sv{font-weight:600}
 .badge{display:inline-block;padding:2px 12px;border-radius:12px;font-size:13px;font-weight:600}
 .bg-long{background:#238636;color:#fff}
@@ -71,6 +77,28 @@ function render(D) {
     var sym = syms[i];
     var s = (D.signals||{})[sym]||{};
     h += signalCard(sym, s);
+  }
+
+  // 回测绩效指标卡
+  var mt = D.metrics||{};
+  if (Object.keys(mt).length>0) {
+    h += '<div class="card"><h2>回测绩效 <span style="color:#8b949e;font-weight:400;font-size:12px">全量回测</span></h2><div class="mg">';
+    var mItems = [
+      ['年化收益', mt.annual_return!=null ? (Number(mt.annual_return)>=0?'+':'')+Number(mt.annual_return).toFixed(2)+'%' : '—', Number(mt.annual_return)>=0?'up':'dn'],
+      ['夏普比率', mt.sharpe!=null ? Number(mt.sharpe).toFixed(2) : '—', Number(mt.sharpe)>=0.5?'up':(Number(mt.sharpe)>=0?'md':'dn')],
+      ['Sortino', mt.sortino!=null ? Number(mt.sortino).toFixed(2) : '—', Number(mt.sortino)>=0.5?'up':(Number(mt.sortino)>=0?'md':'dn')],
+      ['Omega', mt.omega!=null ? Number(mt.omega).toFixed(2) : '—', Number(mt.omega)>=1.2?'up':(Number(mt.omega)>=1?'md':'dn')],
+      ['最大回撤', mt.max_drawdown!=null ? Number(mt.max_drawdown).toFixed(1)+'%' : '—', 'dn'],
+      ['卡玛比率', mt.calmar!=null ? Number(mt.calmar).toFixed(2) : '—', Number(mt.calmar)>=0.5?'up':(Number(mt.calmar)>=0?'md':'dn')],
+      ['回撤持续(d)', mt.max_dd_duration!=null ? mt.max_dd_duration : '—', Number(mt.max_dd_duration)<=120?'up':(Number(mt.max_dd_duration)<=250?'md':'dn')],
+      ['胜率', mt.win_rate!=null ? Number(mt.win_rate).toFixed(1)+'%' : '—', Number(mt.win_rate)>=45?'up':'md'],
+      ['盈亏比', mt.profit_loss_ratio!=null ? Number(mt.profit_loss_ratio).toFixed(2) : '—', Number(mt.profit_loss_ratio)>=2?'up':'md'],
+      ['交易次数', mt.trade_count!=null ? mt.trade_count : '—', '']
+    ];
+    for (var j=0;j<mItems.length;j++) {
+      h += '<div class="mi"><span class="mil">'+mItems[j][0]+'</span><span class="miv '+mItems[j][2]+'">'+mItems[j][1]+'</span></div>';
+    }
+    h += '</div></div>';
   }
 
   // equity curve
