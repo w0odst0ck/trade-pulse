@@ -379,7 +379,8 @@ def compute_metrics(
     if len(equity_series) < 5:
         return {
             'total_return': 0, 'annual_return': 0, 'annual_vol': 0,
-            'sharpe': 0, 'max_drawdown': 0, 'calmar': 0,
+            'sharpe': 0, 'sortino': 0, 'max_drawdown': 0, 'calmar': 0,
+            'omega': 0, 'max_dd_duration': 0,
             'win_rate': 0, 'profit_loss_ratio': 0, 'trade_count': 0,
             'avg_hold_days': 0,
         }
@@ -397,6 +398,16 @@ def compute_metrics(
     annual_vol = float(daily_returns.std() * np.sqrt(252)) if len(daily_returns) > 0 else 0
     sharpe = (annual_return - risk_free_rate) / annual_vol if annual_vol > 1e-8 else 0
 
+    # 下行波动率（仅负收益）→ Sortino
+    downside = daily_returns[daily_returns < 0]
+    downside_vol = float(downside.std() * np.sqrt(252)) if len(downside) > 1 else 0
+    sortino = (annual_return - risk_free_rate) / downside_vol if downside_vol > 1e-8 else 0
+
+    # Omega 比率：正收益加权和 / 负收益加权和（阈值 0）
+    gains = daily_returns[daily_returns > 0].sum()
+    losses = abs(daily_returns[daily_returns < 0].sum())
+    omega = float(gains / losses) if losses > 1e-12 else 0
+
     # 最大回撤
     peak = equity_series.expanding().max()
     dd = (equity_series - peak) / peak
@@ -404,6 +415,28 @@ def compute_metrics(
 
     # 卡玛比率
     calmar = abs(annual_return / max_drawdown) if max_drawdown < -1e-8 else 0
+
+    # 最大回撤持续期（从回撤开始到净值创新高，交易日）
+    max_dd_duration = 0
+    if len(dd) > 0:
+        in_dd = False
+        dd_start = 0
+        cur_duration = 0
+        best_duration = 0
+        for i, v in enumerate(dd.values):
+            if v < -1e-12:
+                if not in_dd:
+                    in_dd = True
+                    dd_start = i
+                cur_duration = i - dd_start + 1
+            else:
+                if in_dd:
+                    best_duration = max(best_duration, cur_duration)
+                    in_dd = False
+                    cur_duration = 0
+        if in_dd:  # 未创新高（仍在回撤中）
+            best_duration = max(best_duration, cur_duration)
+        max_dd_duration = best_duration
 
     # 交易相关
     win_rate = 0.0
@@ -449,8 +482,11 @@ def compute_metrics(
         'annual_return': round(annual_return * 100, 2),     # %
         'annual_vol': round(annual_vol * 100, 2),           # %
         'sharpe': round(sharpe, 4),
+        'sortino': round(sortino, 4),
         'max_drawdown': round(max_drawdown * 100, 2),       # %
         'calmar': round(calmar, 4),
+        'omega': round(omega, 4),
+        'max_dd_duration': max_dd_duration,                 # 交易日
         'win_rate': round(win_rate * 100, 2),               # %
         'profit_loss_ratio': round(profit_loss_ratio, 4),
         'trade_count': trade_count,
@@ -722,17 +758,18 @@ def print_report(
     ma_val = ma_metrics if ma_metrics else {}
 
     def row(label, key, fmt='pct'):
-        sv = format_pct(m.get(key, 0)) if fmt == 'pct' else format_val(m.get(key, 0), 4 if key == 'sharpe' else 2)
-        bhv = format_pct(bh.get(key, 0)) if fmt == 'pct' else format_val(bh.get(key, 0), 4 if key == 'sharpe' else 2)
-        mav = format_pct(ma_val.get(key, 0)) if fmt == 'pct' else format_val(ma_val.get(key, 0), 4 if key == 'sharpe' else 2)
-        if key in ('win_rate', 'profit_loss_ratio', 'trade_count', 'avg_hold_days'):
+        val_dec = 4 if key in ('sharpe', 'sortino', 'omega', 'calmar', 'profit_loss_ratio') else 2
+        sv = format_pct(m.get(key, 0)) if fmt == 'pct' else format_val(m.get(key, 0), val_dec)
+        bhv = format_pct(bh.get(key, 0)) if fmt == 'pct' else format_val(bh.get(key, 0), val_dec)
+        mav = format_pct(ma_val.get(key, 0)) if fmt == 'pct' else format_val(ma_val.get(key, 0), val_dec)
+        if key in ('win_rate', 'profit_loss_ratio', 'trade_count', 'avg_hold_days', 'max_dd_duration'):
             bhv = mav = '   — '
         # 超额 = 策略 - 持有
         exc = m.get(key, 0) - bh.get(key, 0) if bh and fmt == 'pct' else 0
-        if key == 'sharpe':
+        if key in ('sharpe', 'sortino', 'omega', 'calmar'):
             exc = m.get(key, 0) - bh.get(key, 0)
-        exc_s = format_pct(exc) if fmt == 'pct' else format_val(exc, 4)
-        if key in ('win_rate', 'profit_loss_ratio', 'trade_count', 'avg_hold_days'):
+        exc_s = format_pct(exc) if fmt == 'pct' else format_val(exc, val_dec)
+        if key in ('win_rate', 'profit_loss_ratio', 'trade_count', 'avg_hold_days', 'max_dd_duration'):
             exc_s = '   — '
         print(f"  {label:<14s} {sv:>8s}  {bhv:>8s}  {mav:>8s}  {exc_s:>8s}")
 
@@ -740,8 +777,11 @@ def print_report(
     row('年化收益率', 'annual_return')
     row('年化波动率', 'annual_vol')
     row('夏普比率', 'sharpe', 'val')
+    row('Sortino比率', 'sortino', 'val')
+    row('Omega比率', 'omega', 'val')
     row('最大回撤', 'max_drawdown')
     row('卡玛比率', 'calmar', 'val')
+    row('回撤持续期(d)', 'max_dd_duration', 'val')
     print(f"  {'─' * 35}")
     row('胜率', 'win_rate')
     row('盈亏比', 'profit_loss_ratio', 'val')

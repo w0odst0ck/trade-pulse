@@ -16,7 +16,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -59,6 +59,53 @@ def get_provider(name: str = "akshare"):
         "baostock": BaoStockProvider(),
     }
     return providers.get(name, providers["akshare"])
+
+
+def quality_gate(df_new: pd.DataFrame, local_df: pd.DataFrame, symbol: str) -> Tuple[Optional[pd.DataFrame], List[str]]:
+    """数据质量闸门：合并入库前的最后一道校验
+
+    目的：防止脏数据（如前复权跳空 -65%）污染本地缓存和特征计算。
+
+    检查项：
+    1. 单日涨跌异常：|change_pct| > 20% → 剔除该行（ETF 正常单日波动 < 10%）
+    2. 日期连续性：增量更新时，若新数据头部与本地尾部缺口 > 5 个自然日 → 报警
+
+    Returns
+    -------
+    (df_new, warnings)
+      df_new  — 清洗后的数据（若全部被剔除则为 None）
+      warnings — 报警信息列表
+    """
+    warnings: List[str] = []
+    if df_new is None or len(df_new) == 0:
+        return df_new, warnings
+
+    df = df_new.copy()
+
+    # 1. 异常涨跌剔除（前复权跳空防护）
+    if "change_pct" in df.columns:
+        n_before = len(df)
+        bad_mask = df["change_pct"].abs() > 20
+        if bad_mask.any():
+            bad_dates = df.loc[bad_mask, "date"].astype(str).tolist()
+            warnings.append(
+                f"{symbol} 剔除 {int(bad_mask.sum())} 行异常涨跌(|Δ|>20%): {bad_dates[:5]}{'...' if len(bad_dates) > 5 else ''}"
+            )
+            df = df[~bad_mask]
+            if len(df) == 0:
+                return None, warnings
+
+    # 2. 日期连续性（仅增量更新时检查）
+    if len(local_df) > 0:
+        local_last = local_df["date"].max()
+        new_first = df["date"].min()
+        gap_days = (new_first - local_last).days
+        if gap_days > 5:
+            warnings.append(
+                f"{symbol} 数据缺口 {gap_days} 天 (本地尾 {local_last.date()} → 新头 {new_first.date()})"
+            )
+
+    return df, warnings
 
 
 def fetch_data(
@@ -133,6 +180,17 @@ def fetch_data(
             local_df.attrs["stale"] = True
             return local_df
         raise RuntimeError(f"无法获取 {symbol} 数据，且无本地缓存")
+
+    # 数据质量闸门（合并前最后一道校验）
+    df_new, q_warnings = quality_gate(df_new, local_df, symbol)
+    for w in q_warnings:
+        print(f"  ⚠️ [QUALITY] {w}")
+    if df_new is None or len(df_new) == 0:
+        if len(local_df) > 0:
+            print(f"  ⚠️ 数据全部被质量闸门拦截，使用本地缓存（{len(local_df)} 条）")
+            local_df.attrs["stale"] = True
+            return local_df
+        raise RuntimeError(f"{symbol} 数据全部被质量闸门拦截，且无本地缓存")
 
     # 合并增量
     if len(local_df) > 0 and not force:
