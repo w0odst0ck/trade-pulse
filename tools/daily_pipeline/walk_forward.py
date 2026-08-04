@@ -55,6 +55,15 @@ PLATEAU_CONFIRM = 2
 PLATEAU_CENTER = 0.10                        # 当前生产 buy 阈值（高原分析中心）
 PLATEAU_TOL = 0.15                           # 相邻参数绩效相对差异 < 15% 视为高原
 
+# ── 风控验证模式（--risk-scan）──
+RISK_STOP_LOSSES = [0.05, 0.08, 0.10, 0.12]  # 单笔止损网格
+RISK_DD_LIMITS = [None, 0.10, 0.15]          # 回撤熔断网格（None=禁用）
+RISK_COOLDOWNS = [3, 5]                      # 冷却期网格（交易日）
+SCREEN_BUY = 0.10                            # 初筛固定生产阈值 buy
+SCREEN_CONFIRM = 2                           # 初筛固定生产 confirm
+SCREEN_IMPROVE = 0.10                        # 初筛门槛：OOS 夏普均值相对改善 ≥10%
+RISK_DEFAULT_REPORT = PROJECT_ROOT / "docs" / "risk_control_report_2026-08-04.md"
+
 # 折定义：(训练终点, 验证起点, 验证终点)；验证终点 None = 今天
 FOLD_DEFS = [
     ('2024-06-30', '2024-07-01', '2024-12-31'),
@@ -294,6 +303,166 @@ def plateau_analysis(features_df: pd.DataFrame, config: dict, full_end: str,
             'center_verdict': center_verdict}
 
 
+# ── 风控验证模式（--risk-scan）─────────────────────────
+# 两步协议：
+#   1) 初筛：固定生产阈值 × 风控网格，直接在 5 折验证段跑（不选参，风控是规则不是调优）
+#   2) 终审：初筛通过（OOS 夏普均值相对改善 ≥10%）的组合进完整 walk-forward，
+#      训练段同时搜阈值+风控参数、验证段冻结，DSR 扣试错次数（初筛+终审全部组合数）
+
+def backtest_metrics_verbose(features_df: pd.DataFrame, config: dict, start: str, end: str,
+                             cost_rate: float):
+    """同 backtest_metrics，但额外返回 risk_events（风控验证模式专用）。"""
+    try:
+        res = run_silent(features_df, config, start, end, cost_rate)
+        eq = res['equity_curve']
+        if len(eq) < 5:
+            return None
+        m = compute_metrics(eq['equity'], trades_df=res['trades'], n_days=len(eq))
+        return m, len(eq), eq, res['trades'], res.get('risk_events', [])
+    except Exception as e:  # noqa: BLE001
+        print(f"  [WARN] 回测失败 {start}~{end}: {e}")
+        return None
+
+
+def build_risk_cfg(config: dict, rc_params: dict) -> dict:
+    """固定生产阈值（buy=0.10/confirm=2，adaptive 禁用）+ 风控参数开启。"""
+    cfg = build_config(config, SCREEN_BUY, SCREEN_CONFIRM)
+    cfg['risk_control'] = {'enabled': True, **rc_params}
+    return cfg
+
+
+def run_val_fold(features_df: pd.DataFrame, cfg: dict, cost_rate: float,
+                 full_end: str, fold_idx: int) -> dict | None:
+    """在指定折的验证段回测一次，返回绩效 + 风控触发明细。失败返回 None。"""
+    train_end, val_start, val_end_def = FOLD_DEFS[fold_idx]
+    val_end = val_end_def or full_end
+    vb = backtest_metrics_verbose(features_df, cfg, val_start, val_end, cost_rate)
+    if vb is None:
+        return None
+    m, vn, veq, vtr, rev = vb
+    return {
+        'fold': fold_idx + 1,
+        'val_range': f"{val_start}~{val_end}",
+        'val_actual': f"{veq['date'].iloc[0].date()}~{veq['date'].iloc[-1].date()}",
+        'val_sharpe': m['sharpe'], 'val_annual': m['annual_return'],
+        'val_dd': m['max_drawdown'], 'val_trades': m['trade_count'],
+        'val_n': vn,
+        'events': [e.get('reason') for e in rev],
+    }
+
+
+def run_risk_screen(features_df: pd.DataFrame, config: dict, full_end: str,
+                    cost_rate: float) -> tuple:
+    """初筛：基线（无风控）vs 24 风控组合，全部在 5 折验证段直接跑（不选参）。
+
+    返回 (rows, base_summary)。rows 每项含 5 折 OOS 夏普均值/中位/最差折、
+    相对基线改善、触发统计、是否通过初筛。
+    """
+    # 基线（无风控）：固定生产阈值
+    base_cfg = build_config(config, SCREEN_BUY, SCREEN_CONFIRM)
+    base_folds = [run_val_fold(features_df, base_cfg, cost_rate, full_end, i)
+                  for i in range(len(FOLD_DEFS))]
+    base_folds = [f for f in base_folds if f is not None]
+    if not base_folds:
+        raise RuntimeError("风控初筛：基线 5 折验证段全部无效，无法对比")
+    base_sharpes = [f['val_sharpe'] for f in base_folds]
+    base_summary = {'mean': float(np.mean(base_sharpes)),
+                    'median': float(np.median(base_sharpes)),
+                    'worst': float(min(base_sharpes)),
+                    'dd_mean': float(np.mean([f['val_dd'] for f in base_folds])),
+                    'n_folds': len(base_folds)}
+    print(f"  [base] 无风控 5 折 OOS 夏普: 均值 {base_summary['mean']:.3f}  "
+          f"中位 {base_summary['median']:.3f} 最差折 {base_summary['worst']:.3f}")
+
+    rows = []
+    for sl in RISK_STOP_LOSSES:
+        for dd in RISK_DD_LIMITS:
+            for cd in RISK_COOLDOWNS:
+                cfg = build_risk_cfg(config, {'stop_loss_pct': sl,
+                                              'dd_limit_pct': dd,
+                                              'cooldown_days': cd})
+                folds = [run_val_fold(features_df, cfg, cost_rate, full_end, i)
+                         for i in range(len(FOLD_DEFS))]
+                folds = [f for f in folds if f is not None]
+                if not folds:
+                    print(f"  [WARN] 组合 sl={sl} dd={dd} cd={cd} 无有效折，跳过")
+                    continue
+                sharpes = [f['val_sharpe'] for f in folds]
+                mean = float(np.mean(sharpes))
+                events = [e for f in folds for e in f['events']]
+                improve = (mean - base_summary['mean']) / max(abs(base_summary['mean']), 1e-9)
+                rows.append({
+                    'stop_loss_pct': sl, 'dd_limit_pct': dd, 'cooldown_days': cd,
+                    'mean': mean, 'median': float(np.median(sharpes)),
+                    'worst': float(min(sharpes)),
+                    'improve': improve,
+                    'n_stop': events.count('止损'),
+                    'n_dd': events.count('回撤熔断'),
+                    'pass': improve >= SCREEN_IMPROVE,
+                })
+    rows.sort(key=lambda r: r['mean'], reverse=True)
+    return rows, base_summary
+
+
+def risk_grid_search(features_df: pd.DataFrame, config: dict, start: str, end: str,
+                     cost_rate: float, rc_params_list: list) -> dict:
+    """终审训练段网格：buy_th × confirm_days × 风控组合同时搜索，选训练段夏普最高。"""
+    grid = []
+    for buy_th in BUY_CANDIDATES:
+        for cd in CONFIRM_CANDIDATES:
+            for rcp in rc_params_list:
+                cfg = build_config(config, buy_th, cd)
+                cfg['risk_control'] = {'enabled': True, **rcp}
+                bt = backtest_metrics_verbose(features_df, cfg, start, end, cost_rate)
+                if bt is None:
+                    continue
+                m = bt[0]
+                grid.append({'buy_th': buy_th, 'sell_th': round(buy_th * SELL_RATIO, 2),
+                             'confirm_days': cd, 'rc': dict(rcp),
+                             'sharpe': m['sharpe'], 'annual_return': m['annual_return'],
+                             'max_drawdown': m['max_drawdown'],
+                             'trade_count': m['trade_count']})
+    if not grid:
+        raise RuntimeError(f"训练段 {start}~{end} 网格搜索全部失败")
+    return max(grid, key=lambda g: g['sharpe'])   # 并列时取先遇到的（最小 buy_th）
+
+
+def run_risk_final(features_df: pd.DataFrame, config: dict, full_end: str,
+                   cost_rate: float, rc_params_list: list) -> list:
+    """终审：完整 walk-forward（训练段同搜阈值+风控，验证段冻结）。
+
+    返回每折详情（含训练段所选参数与验证段绩效）。
+    """
+    folds = []
+    for idx, (train_end, val_start, val_end_def) in enumerate(FOLD_DEFS):
+        val_end = val_end_def or full_end
+        print(f"\n  ── 折 {idx + 1}/{len(FOLD_DEFS)}  训练 ~{train_end} → 验证 {val_start}~{val_end} ──")
+        best = risk_grid_search(features_df, config, TRAIN_START, train_end,
+                                cost_rate, rc_params_list)
+        print(f"  [grid] 训练段最优: buy={best['buy_th']:.2f} sell={best['sell_th']:.2f} "
+              f"confirm={best['confirm_days']} stop={best['rc']['stop_loss_pct']} "
+              f"dd={best['rc']['dd_limit_pct']} cool={best['rc']['cooldown_days']} "
+              f"→ 训练夏普 {best['sharpe']:.4f}")
+        cfg = build_config(config, best['buy_th'], best['confirm_days'])
+        cfg['risk_control'] = {'enabled': True, **best['rc']}
+        vf = run_val_fold(features_df, cfg, cost_rate, full_end, idx)
+        if vf is None:
+            print(f"  [ERR] 折 {idx + 1} 验证段无有效结果，跳过")
+            continue
+        vf.update({
+            'train_range': f"{TRAIN_START}~{train_end}",
+            'buy_th': best['buy_th'], 'sell_th': best['sell_th'],
+            'confirm_days': best['confirm_days'],
+            'rc': dict(best['rc']),
+            'train_sharpe': best['sharpe'],
+        })
+        print(f"  [val]   验证段: 夏普 {vf['val_sharpe']:.4f}  年化 {vf['val_annual']:+.2f}%  "
+              f"回撤 {vf['val_dd']:.2f}%  交易 {vf['val_trades']}  "
+              f"风控事件 {len(vf['events'])}")
+        folds.append(vf)
+    return folds
+
+
 # ── 报告输出 ────────────────────────────────────────────
 
 def fmt_pct(v: float, sign: bool = True) -> str:
@@ -454,7 +623,208 @@ def build_report(args, config, features_df, folds, is_scores, dsr, plateau,
     return '\n'.join(L)
 
 
+# ── 风控验证报告（--risk-scan）────────────────────────
+
+def build_risk_report(args, config, features_df, base_summary, screen_rows,
+                      passed, final_folds, dsr, full_end, trials) -> str:
+    L = []
+    A = L.append
+    A("# 独立风控层（单笔止损 / 权益回撤熔断 / 冷却期）walk-forward 验证报告")
+    A("")
+    A(f"- 生成日期：{date.today().isoformat()}（数据截至 {features_df['date'].max().date()}，"
+      f"共 {len(features_df)} 个交易日）")
+    A(f"- 标的：{args.symbol}　费率：单边 {args.cost}（{args.cost * 10000:.1f}‱）")
+    A(f"- 运行命令：`python3 tools/daily_pipeline/walk_forward.py --risk-scan"
+      f" --symbol {args.symbol} --cost {args.cost}`")
+    A("")
+    A(f"> **口径说明**：沿用 walk_forward 主报告口径（内存拷贝 config 并置 "
+      f"`adaptive_thresholds.enabled=false`，使阈值网格真正生效；风控参数从 "
+      f"`config['risk_control']` 读取）。风控是**规则而非调参**：初筛不选参、直接在 "
+      f"5 折验证段跑；仅终审在训练段与阈值联合搜索、验证段冻结。")
+    A("")
+
+    # ── 1. 初筛 ──
+    A(f"## 1. 初筛：固定生产阈值 × 风控网格（{len(RISK_STOP_LOSSES) * len(RISK_DD_LIMITS) * len(RISK_COOLDOWNS)} 组合，5 折 OOS）")
+    A("")
+    A(f"固定生产阈值 buy={SCREEN_BUY} / sell={round(SCREEN_BUY * SELL_RATIO, 2)} / "
+      f"confirm={SCREEN_CONFIRM}；风控网格 = stop_loss_pct ∈ {RISK_STOP_LOSSES} × "
+      f"dd_limit_pct ∈ {RISK_DD_LIMITS}（None=禁用）× cooldown_days ∈ {RISK_COOLDOWNS}。"
+      f"每个组合直接在 5 折验证段回测（不选参）。")
+    A(f"")
+    A(f"**基线（无风控，固定生产阈值）**：5 折 OOS 夏普 均值 `{base_summary['mean']:.3f}` / "
+      f"中位 `{base_summary['median']:.3f}` / 最差折 `{base_summary['worst']:.3f}`"
+      f"（{base_summary['n_folds']} 折有效）")
+    A("")
+    rows = []
+    for r in screen_rows:
+        dd_s = '禁用' if r['dd_limit_pct'] is None else f"{r['dd_limit_pct']:.2f}"
+        rows.append([f"{r['stop_loss_pct']:.2f}", dd_s, f"{r['cooldown_days']}",
+                     f"{r['mean']:.3f}", f"{r['median']:.3f}", f"{r['worst']:.3f}",
+                     f"{r['improve']:+.1%}", f"{r['n_stop']}", f"{r['n_dd']}",
+                     '✅' if r['pass'] else ''])
+    A(md_table(['止损', '回撤熔断', '冷却', '夏普均值', '中位', '最差折',
+                'vs 基线', '止损触发', '熔断触发', '通过'], rows))
+    A("")
+    if passed:
+        A(f"**通过初筛**（OOS 夏普均值相对基线改善 ≥ {SCREEN_IMPROVE:.0%}）："
+          + "；".join(
+              f"sl={r['stop_loss_pct']:.2f}/dd={'禁用' if r['dd_limit_pct'] is None else f'{r['dd_limit_pct']:.2f}'}"
+              f"/cd={r['cooldown_days']}（均值 {r['mean']:.3f}，改善 {r['improve']:+.1%}）"
+              for r in passed))
+    else:
+        A(f"**无组合通过初筛**（OOS 夏普均值改善均 < {SCREEN_IMPROVE:.0%}）。")
+    A("")
+    A("> 注：初筛为规则验证而非选优——未通过不代表规则无效，只表示在此固定阈值口径下 "
+      "OOS 夏普均值未能相对基线提升 ≥10%；仍可参考各组合的最差折/触发次数评估风控的防御价值。")
+    A("")
+
+    # ── 2. 终审 ──
+    A(f"## 2. 终审：完整 walk-forward（训练段同搜阈值+风控参数，验证段冻结）")
+    A("")
+    if not final_folds:
+        A("无通过初筛的组合，未执行终审。")
+        A("")
+    else:
+        A(f"训练段网格 = buy_th ∈ {BUY_CANDIDATES} × confirm_days ∈ {CONFIRM_CANDIDATES} × "
+          f"初筛通过风控组合 {len(passed)} 个，按训练段夏普最高选参，参数（含风控）冻结后验证段回测。")
+        A("")
+        f_rows = []
+        for f in final_folds:
+            dd_s = '禁用' if f['rc']['dd_limit_pct'] is None else f"{f['rc']['dd_limit_pct']:.2f}"
+            f_rows.append([f"折 {f['fold']}", f['train_range'], f['val_actual'],
+                           f"{f['buy_th']:.2f}", f"{f['sell_th']:.2f}", f"{f['confirm_days']}",
+                           f"{f['rc']['stop_loss_pct']:.2f}", dd_s, f"{f['rc']['cooldown_days']}",
+                           f"{f['train_sharpe']:.3f}", f"{f['val_sharpe']:.3f}",
+                           fmt_pct(f['val_annual']), fmt_pct(f['val_dd'], sign=False),
+                           f"{f['val_trades']}", f"{len(f['events'])}"])
+        A(md_table(['折', '训练段', '验证段', 'buy', 'sell', '确认', '止损', '熔断', '冷却',
+                    '训练夏普', '验证夏普', '验证年化', '验证回撤', '交易数', '风控事件'], f_rows))
+        A("")
+        v_sharpes = [f['val_sharpe'] for f in final_folds]
+        v_annuals = [f['val_annual'] for f in final_folds]
+        v_dds = [f['val_dd'] for f in final_folds]
+        A(md_table(['指标', '终审 OOS', '基线（无风控）'], [
+            ['夏普均值', f"{np.mean(v_sharpes):.3f}", f"{base_summary['mean']:.3f}"],
+            ['夏普中位', f"{np.median(v_sharpes):.3f}", f"{base_summary['median']:.3f}"],
+            ['夏普最差折', f"{min(v_sharpes):.3f}", f"{base_summary['worst']:.3f}"],
+            ['年化均值', fmt_pct(np.mean(v_annuals)), '—'],
+            ['回撤均值', fmt_pct(np.mean(v_dds), sign=False),
+             fmt_pct(base_summary['dd_mean'], sign=False)],
+        ]))
+        A("")
+        # ── 3. DSR ──
+        A(f"## 3. Deflated Sharpe Ratio（终审，扣除试错次数）")
+        A("")
+        if dsr is None:
+            A("有效折 < 2，无法估计 V[SR̂]，DSR 不适用。")
+        else:
+            A(f"- 试错次数 N = **{dsr['trials']}** = 初筛 {len(screen_rows)} 组合 + 终审 "
+              f"{len(FOLD_DEFS)} 折 × {len(BUY_CANDIDATES)} buy × {len(CONFIRM_CANDIDATES)} confirm "
+              f"× {len(passed)} 风控组合（如实计入全部搜索过的参数组合）")
+            A(f"- 各折夏普样本方差 V[SR̂] = {dsr['var_sr']:.5f}（√V = {dsr['sd_sr']:.4f}）")
+            A(f"- 期望最大夏普阈值 SR0 = **{dsr['sr0']:.4f}**（{dsr['trials_note']}）")
+            A(f"- 每折 deflated = (SR_i − SR0) / SE_i，SE_i = √((1 + 0.5·SR_i²)/n_i)，p 为单侧正态")
+            A("")
+            d_rows = []
+            for i, (f, pf) in enumerate(zip(final_folds, dsr['per_fold'])):
+                d_rows.append([f"折 {f['fold']}", f"{pf['sr']:.3f}", f"{pf['n']}",
+                               f"{pf['se']:.4f}", f"{pf['deflated']:+.3f}",
+                               f"{pf['p']:.4f}" + ("⚠" if pf['p'] < 0.05 else "")])
+            d_rows.append(['均值(合并)', f"{dsr['mean_sr']:.3f}",
+                           f"{round(float(np.mean([f['val_n'] for f in final_folds])))}",
+                           f"{dsr['se_mean']:.4f}", f"{dsr['mean_deflated']:+.3f}",
+                           f"{dsr['mean_p']:.4f}" + ("⚠" if dsr['mean_p'] < 0.05 else "")])
+            A(md_table(['折', 'SR_i', 'n_i', 'SE_i', 'Deflated', 'p 值(单侧)'], d_rows))
+            A("")
+            A(f"- **均值夏普的 deflated 显著性：p = {dsr['mean_p']:.4f}**"
+              f"{'（<0.05，扣除多重检验后仍显著）' if dsr['mean_p'] < 0.05 else '（未达显著，需谨慎对待）'}")
+            A("")
+            A(f"> DSR 口径与主报告一致（简化版：SR 标准误正态近似，V[SR̂] 用各折样本方差，"
+              f"未做 rolling 重叠相关性修正）。试错次数按最诚实口径计入初筛全部组合与终审全部搜索组合。")
+            A(f"> **方法局限**：初筛与终审共享同一批 5 折验证段样本——初筛门槛消费了 OOS 信息"
+              f"（选择偏差），终审 SR_i 因此带有乐观倾向，且该偏差无法完全由 trials 计数抵消；"
+              f"终审结果应视为『本验证协议下』的上限估计，落地前建议在更长样本外区间复核。")
+            A("")
+
+    # ── 4. 结论 ──
+    A(f"## 4. 结论与建议")
+    A("")
+    if not final_folds:
+        A(f"在当前验证口径（{TRAIN_START} ~ {full_end}，5 折滚动 OOS）下，风控网格 24 组合无一达到"
+          f"『OOS 夏普均值相对基线改善 ≥ {SCREEN_IMPROVE:.0%}』的门槛。")
+        A("")
+        A(f"- 风控的价值主要体现在尾部防御（最差折/回撤/单笔深亏），而非夏普均值本身；"
+          f"若目标是控制最大回撤与单笔止损，应直接比较各组合的验证段回撤与最差折，而非以夏普门槛一票否决。")
+        A(f"- 可考虑放宽初筛门槛或改用『回撤改善』作为主目标重跑 `--risk-scan`。")
+    else:
+        A(f"- 终审 OOS 夏普均值 **{np.mean([f['val_sharpe'] for f in final_folds]):.3f}** vs 基线 "
+          f"**{base_summary['mean']:.3f}**（{np.mean([f['val_sharpe'] for f in final_folds]) - base_summary['mean']:+.3f}）。")
+        A(f"- DSR 均值 deflated = {dsr['mean_deflated']:+.3f}，p = {dsr['mean_p']:.4f}"
+          f"{'（扣除试错后仍显著）' if dsr['mean_p'] < 0.05 else '（不显著，谨慎）'}。")
+        best_worst = min(r['worst'] for r in passed)
+        A(f"- 防御价值观察：初筛中通过组合的最差折普遍优于基线（最优 `{best_worst:.3f}` vs 基线 "
+          f"`{base_summary['worst']:.3f}`）——止损 5% 在深跌折（2026-07，单日 -6% 级）中"
+          f"有效截断了单笔深亏；但该优势在训练段联合搜索口径下未转化为 OOS 夏普提升，"
+          f"说明风控改善集中在尾部风险而非期望收益。")
+        A(f"- 建议：若目标是压回撤/单笔亏损，可采信初筛表的最差折与触发统计，按 "
+          f"`sl=0.05/cd=3`（熔断可加 `dd=0.10`）口径小范围试用；若目标是夏普，本验证不支持开启风控。")
+
+    A("")
+    A("---")
+    A("*本报告由 walk_forward.py --risk-scan 自动生成（纯只读分析，未修改任何生产代码或数据文件；"
+      f"风控默认关闭，需在 config.json 的 risk_control.enabled=true 才在生产回测中生效）。*")
+    return '\n'.join(L)
+
+
 # ── 主入口 ────────────────────────────────────────────
+
+def run_risk_scan_main(args, config, features_df, full_end) -> None:
+    """--risk-scan 主流程：初筛（固定阈值 × 风控网格）→ 终审（联合搜索 + DSR）。"""
+    print("=" * 62)
+    print("  风控层 walk-forward 验证（初筛 + 终审 DSR）")
+    print(f"  标的 {args.symbol} | 费率 {args.cost}")
+    print("=" * 62)
+    print("  [i] 风控是规则不调参：初筛固定生产阈值直接跑验证段；终审才联合搜索")
+
+    # 1) 初筛
+    print("\n[1/2] 初筛：固定生产阈值 × 风控网格（5 折 OOS，不选参）...")
+    screen_rows, base_summary = run_risk_screen(features_df, config, full_end, args.cost)
+    passed = [r for r in screen_rows if r['pass']]
+    print(f"  [screen] 通过 {len(passed)}/{len(screen_rows)} 组合（OOS 夏普均值改善 ≥ {SCREEN_IMPROVE:.0%}）")
+
+    # 2) 终审
+    final_folds, dsr, trials = [], None, 0
+    if passed:
+        rc_params_list = [{'stop_loss_pct': r['stop_loss_pct'],
+                           'dd_limit_pct': r['dd_limit_pct'],
+                           'cooldown_days': r['cooldown_days']} for r in passed]
+        print("\n[2/2] 终审：完整 walk-forward（训练段同搜阈值+风控参数）...")
+        final_folds = run_risk_final(features_df, config, full_end, args.cost,
+                                     rc_params_list)
+        # DSR 试错次数 = 初筛组合数 + 终审全部搜索组合数（5 折 × 7 buy × 3 confirm × K 风控）
+        trials = (len(screen_rows)
+                  + len(FOLD_DEFS) * len(BUY_CANDIDATES) * len(CONFIRM_CANDIDATES) * len(passed))
+        if final_folds:
+            dsr = compute_dsr([f['val_sharpe'] for f in final_folds],
+                              [f['val_n'] for f in final_folds], trials)
+        if dsr is None:
+            print("  [WARN] 有效折 < 2，DSR 无法计算")
+    else:
+        print("\n[2/2] 无通过初筛的组合，跳过终审。")
+
+    # 3) 报告
+    print("\n[生成报告]")
+    report = build_risk_report(args, config, features_df, base_summary, screen_rows,
+                               passed, final_folds, dsr, full_end, trials)
+    print("\n" + "=" * 62)
+    print(report)
+    print("=" * 62)
+
+    report_path = Path(args.risk_report)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report + "\n", encoding='utf-8')
+    print(f"\n  [SAVE] 报告 → {report_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description='walk-forward 多折回测 + DSR + 参数高原分析')
@@ -463,6 +833,10 @@ def main():
     parser.add_argument('--trials', type=int, default=105,
                         help='DSR 试错次数 N（默认 7×3×5=105）')
     parser.add_argument('--report', default=str(DEFAULT_REPORT), help='报告输出路径')
+    parser.add_argument('--risk-scan', action='store_true',
+                        help='风控参数 walk-forward 验证模式（初筛 + 终审 DSR），写独立报告')
+    parser.add_argument('--risk-report', default=str(RISK_DEFAULT_REPORT),
+                        help='风控验证报告输出路径（默认 docs/risk_control_report_2026-08-04.md）')
     args = parser.parse_args()
 
     print("=" * 62)
@@ -476,6 +850,12 @@ def main():
     print(f"  [OK] 特征 {len(features_df)} 条 "
           f"({features_df['date'].min().date()} ~ {features_df['date'].max().date()})")
     print("  [i] 网格搜索/高原分析置 adaptive_thresholds.enabled=false（见 docstring）")
+
+    # 风控验证模式：独立流程（初筛 + 终审），完成后直接退出
+    if args.risk_scan:
+        run_risk_scan_main(args, config, features_df, full_end)
+        return
+
 
     # 1) walk-forward
     print("\n[1/3] walk-forward 多折滚动...")

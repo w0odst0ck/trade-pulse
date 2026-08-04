@@ -40,6 +40,11 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from signal_rules import decide
+from risk_control import (  # 独立风控层（enabled=false 时完全旁路）
+    check_stop_loss, check_drawdown_limit, check_cooldown,
+    set_cooldown, tick_cooldown, update_peak_equity, update_entry_price,
+    parse_risk_config,
+)
 
 
 # ── 配置 ─────────────────────────────────────────────
@@ -115,6 +120,18 @@ def run_backtest(
     trades = []
     daily = []   # T+1 日跟踪
 
+    # ── 独立风控层状态（risk_control.py，vnpy risk_manager 理念）──
+    # enabled=false 时全部旁路，回测行为与无风控层完全一致
+    rc = parse_risk_config(config)
+    rc_enabled = rc['enabled']
+    stop_loss_pct = rc['stop_loss_pct'] if rc_enabled else None
+    dd_limit_pct = rc['dd_limit_pct'] if rc_enabled else None
+    cooldown_days = rc['cooldown_days'] if rc_enabled else 0
+    peak_equity = 0.0          # 峰值权益（日末更新，供次日熔断判断）
+    entry_price = 0.0          # 持仓批次买入均价（份额加权）
+    cooldown_remaining = 0     # 剩余禁止开新仓的交易日数
+    risk_events = []           # 风控触发事件（reason/日期/权益）
+
     for i in range(n_days - 1):
         today = df.iloc[i]
         tomorrow = df.iloc[i + 1]
@@ -134,8 +151,92 @@ def run_backtest(
         signal = result['decision']
         state = result['_new_state']  # 取出更新后的状态，用于下一轮
 
+        # ── 风控检查（在状态机决策之后做硬拦截；enabled=false 完全旁路）──
+        risk_reason = None
+        cooldown_active = False
+        if rc_enabled:
+            # 冷却期：本日是否禁止开仓由「递减前」计数决定——触发日设计数=cooldown_days，
+            # 之后每日递减，共拦截 cooldown_days 个交易日（递减到 0 的次日才可开仓）
+            cooldown_active = check_cooldown(cooldown_remaining)
+            if cooldown_remaining > 0:
+                cooldown_remaining = tick_cooldown(cooldown_remaining)
+            # 持仓时每日检查单笔止损 + 权益回撤熔断（用昨日日末峰值权益）
+            if holding_shares > 1e-9:
+                current_holdings_value = holding_shares * tomorrow_close
+                total_equity = current_holdings_value + cash
+                if check_stop_loss(entry_price, tomorrow_close, stop_loss_pct):
+                    risk_reason = '止损'
+                elif check_drawdown_limit(peak_equity, total_equity, dd_limit_pct):
+                    risk_reason = '回撤熔断'
+
+        if risk_reason is not None:
+            # 强制清仓：以 T+1 收盘价全部卖出（视为卖出 action，reason 标注）
+            sell_shares = holding_shares
+            sell_value = sell_shares * tomorrow_close
+            cost = sell_value * cost_rate
+            cash += sell_value - cost
+            holding_shares = 0.0
+            holding_value = 0.0
+            action = '清仓'
+            risk_events.append({
+                'date': tomorrow_date,
+                'reason': risk_reason,
+                # 卖出前权益（T+1 收盘市值，未扣手续费）
+                'equity': round(total_equity, 6),
+                'close': float(tomorrow_close),
+                'entry_price': round(entry_price, 6) if entry_price else None,
+            })
+            # LIFO 扣减未平仓批次（与普通卖出逻辑一致）：全部闭合
+            remaining = sell_shares
+            for j in range(len(trades) - 1, -1, -1):
+                t = trades[j]
+                if t['action'] not in ('买入', '加仓'):
+                    continue
+                if t['exit_date'] is not None:
+                    continue
+                lot = t.get('entry_shares', t['entry_value'] / t['entry_price'])
+                if lot <= 1e-12:
+                    continue
+                if remaining >= lot - 1e-12:
+                    # 整个批次卖完 → 闭合，收益按价格算
+                    remaining -= lot
+                    t['exit_date'] = tomorrow_date
+                    t['exit_price'] = tomorrow_close
+                    t['exit_value'] = lot * tomorrow_close
+                    t['return'] = (tomorrow_close - t['entry_price']) / t['entry_price']
+                else:
+                    # 部分卖出：批次剩余份额减少，不闭合
+                    t['entry_shares'] = lot - remaining
+                    t['entry_value'] = t['entry_shares'] * t['entry_price']
+                    remaining = 0.0
+                if remaining <= 1e-12:
+                    break
+
+            trades.append({
+                'action': '清仓',
+                'entry_date': tomorrow_date,
+                'entry_price': tomorrow_close,
+                'entry_value': sell_value,
+                'exit_date': None,
+                'exit_price': None,
+                'exit_value': None,
+                'return': None,
+                'signal_date': today_date,
+                'signal_score': total_score,
+                'reason': risk_reason,
+            })
+            # 触发 → 进入冷却期；清仓后重置持仓均价与峰值基准
+            # （峰值重置为清仓后权益，否则权益低于旧峰值×(1-dd) 时
+            #   重新开仓会立刻再次熔断，形成永久锁仓）
+            # 冷却至少 1 个交易日：即使 cooldown_days=0（无冷却期），
+            # 触发当日也不得重买（刚止损清仓即重买是无意义抖动）
+            cooldown_remaining = max(1, set_cooldown(cooldown_days))
+            entry_price = 0.0
+            peak_equity = cash
+
         # ── 交易执行：连续仓位调整 ──
-        action = '不动'
+        if risk_reason is None:
+            action = '不动'   # 风控触发日保留 '清仓' 标记（未触发才重置）
         current_holdings_value = holding_shares * tomorrow_close
         total_equity = current_holdings_value + cash
 
@@ -147,13 +248,19 @@ def run_backtest(
             if abs(gap_pct) > 0.05:
                 gap_value = gap_pct * total_equity
 
-                if gap_value > 0:  # 买入
+                if gap_value > 0 and not (rc_enabled and (cooldown_active or risk_reason is not None)):  # 买入
                     cost = gap_value * cost_rate
                     total_needed = gap_value + cost
                     if total_needed <= cash:
-                        holding_shares += gap_value / tomorrow_close
+                        new_shares = gap_value / tomorrow_close
+                        holding_shares += new_shares
                         cash -= total_needed
                         holding_value = holding_shares * tomorrow_close
+                        if rc_enabled:
+                            # 入场均价跟踪：加仓时按份额加权更新
+                            entry_price = update_entry_price(
+                                holding_shares - new_shares, entry_price,
+                                new_shares, float(tomorrow_close))
 
                         is_first_buy = abs(current_pct) < 1e-6
                         act_label = '买入' if is_first_buy else '加仓'
@@ -173,6 +280,9 @@ def run_backtest(
                         })
                     else:
                         action = '不动(现金不足)'
+                elif gap_value > 0:
+                    # 冷却期内禁止开新仓（风控硬拦截）；触发日保留 '清仓' 标记
+                    action = '不动(冷却期)' if risk_reason is None else '清仓'
 
                 else:  # 卖出
                     sell_value = -gap_value
@@ -185,6 +295,8 @@ def run_backtest(
 
                         is_full_close = target_pct < 1e-6
                         action = '清仓' if is_full_close else '减仓'
+                        if rc_enabled and is_full_close:
+                            entry_price = 0.0  # 全清仓 → 重置持仓均价
 
                         # LIFO 扣减未平仓批次：从最近一笔买入/加仓开始扣份额
                         remaining = sell_shares
@@ -230,6 +342,9 @@ def run_backtest(
         # ── 日末权益（T+1 收盘后） ──
         total_equity = cash + holding_shares * tomorrow_close
         last_close = tomorrow_close
+        if rc_enabled:
+            # 日末更新峰值权益（供次日回撤熔断判断）
+            peak_equity = update_peak_equity(total_equity, peak_equity)
 
         daily.append({
             'date': tomorrow_date,
@@ -268,6 +383,7 @@ def run_backtest(
         'trades': trades_df,
         'equity_curve': daily_df,
         'final_value': float(round(cash + holding_shares * last_close, 6)),
+        'risk_events': risk_events,   # 风控触发事件（enabled=false 时恒为空列表）
     }
 
 

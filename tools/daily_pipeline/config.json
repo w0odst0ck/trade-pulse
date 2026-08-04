@@ -33,6 +33,12 @@
     "ma_percentile_low": 0.1,
     "ma_percentile_high": 0.9
   },
+  "risk_control": {
+    "enabled": false,
+    "stop_loss_pct": 0.08,
+    "dd_limit_pct": 0.10,
+    "cooldown_days": 5
+  },
   "momentum_window": 5,
   "trend_window": 20,
   "rsrs_window": 18,
