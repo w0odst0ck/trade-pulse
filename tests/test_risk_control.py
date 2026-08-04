@@ -110,7 +110,9 @@ class TestInCooldown(unittest.TestCase):
         self.assertFalse(rc.in_cooldown('2026-07-30', None, 5))
 
 
-class TestCooldownTradingDays(unittest.TestCase):
+class TestPeakEquity(unittest.TestCase):
+    """update_peak_equity：峰值滚动更新"""
+
     def test_update_to_new_high(self):
         self.assertEqual(rc.update_peak_equity(1.2, 1.0), 1.2)
 
@@ -215,6 +217,13 @@ class TestParseRiskConfig(unittest.TestCase):
     def test_non_dict_value_falls_back(self):
         p = rc.parse_risk_config({'risk_control': None})
         self.assertFalse(p['enabled'])
+
+    def test_enabled_string_variants(self):
+        # 字符串形式的 enabled 也按语义解析（'false' 不应被 bool() 误判为 True）
+        for s, exp in [('true', True), ('True', True), ('yes', True), ('1', True),
+                       ('on', True), ('false', False), ('no', False), ('0', False)]:
+            p = rc.parse_risk_config({'risk_control': {'enabled': s}})
+            self.assertEqual(p['enabled'], exp, f'enabled={s!r}')
 
 
 class TestRiskEngineIntegration(unittest.TestCase):

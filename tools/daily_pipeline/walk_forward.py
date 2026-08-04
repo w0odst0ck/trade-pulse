@@ -668,7 +668,7 @@ def build_risk_report(args, config, features_df, base_summary, screen_rows,
     if passed:
         A(f"**通过初筛**（OOS 夏普均值相对基线改善 ≥ {SCREEN_IMPROVE:.0%}）："
           + "；".join(
-              f"sl={r['stop_loss_pct']:.2f}/dd={'禁用' if r['dd_limit_pct'] is None else f'{r['dd_limit_pct']:.2f}'}"
+              f"sl={r['stop_loss_pct']:.2f}/dd={'禁用' if r['dd_limit_pct'] is None else format(r['dd_limit_pct'], '.2f')}"
               f"/cd={r['cooldown_days']}（均值 {r['mean']:.3f}，改善 {r['improve']:+.1%}）"
               for r in passed))
     else:
@@ -759,8 +759,11 @@ def build_risk_report(args, config, features_df, base_summary, screen_rows,
     else:
         A(f"- 终审 OOS 夏普均值 **{np.mean([f['val_sharpe'] for f in final_folds]):.3f}** vs 基线 "
           f"**{base_summary['mean']:.3f}**（{np.mean([f['val_sharpe'] for f in final_folds]) - base_summary['mean']:+.3f}）。")
-        A(f"- DSR 均值 deflated = {dsr['mean_deflated']:+.3f}，p = {dsr['mean_p']:.4f}"
-          f"{'（扣除试错后仍显著）' if dsr['mean_p'] < 0.05 else '（不显著，谨慎）'}。")
+        if dsr is None:
+            A("- 有效折 < 2，DSR（Deflated Sharpe Ratio）不适用。")
+        else:
+            A(f"- DSR 均值 deflated = {dsr['mean_deflated']:+.3f}，p = {dsr['mean_p']:.4f}"
+              f"{'（扣除试错后仍显著）' if dsr['mean_p'] < 0.05 else '（不显著，谨慎）'}。")
         best_worst = min(r['worst'] for r in passed)
         A(f"- 防御价值观察：初筛中通过组合的最差折普遍优于基线（最优 `{best_worst:.3f}` vs 基线 "
           f"`{base_summary['worst']:.3f}`）——止损 5% 在深跌折（2026-07，单日 -6% 级）中"

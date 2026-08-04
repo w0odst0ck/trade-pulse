@@ -24,11 +24,13 @@ risk_control.py — 独立风控层（vnpy risk_manager 理念）
       "cooldown_days": 5         # 触发后禁止开新仓的交易日数
     }
 
-冷却期两种实现（在交易日序列下等价）：
+冷却期两种实现（注意触发日计入口径略有差异，使用前核对语义）：
   - in_cooldown(last_stop_date, today, cooldown_days)：按自然日差（通用纯函数，
-    供单测与外部调用；传入交易日历日期序列时与交易日计数版等价）。
-  - set_cooldown / tick_cooldown / check_cooldown：回测引擎内部用的交易日
-    计数版（真实日历含周末时避免自然日漂移，语义精确）。
+    供单测与外部调用；触发当日即视为冷却第 1 天，相距恰好 cooldown_days 天解除）。
+  - set_cooldown / tick_cooldown / check_cooldown：回测引擎内部的交易日计数版
+    （真实日历含周末时避免自然日漂移；触发日设计数=cooldown_days，递减到 0 的
+    次日才可开仓，即触发后共拦截 cooldown_days 个交易日——与 in_cooldown 相比，
+    触发日是否计入冷却天数存在 1 天口径差，引擎内部两处用法保持一致即可）。
 """
 
 from __future__ import annotations
@@ -189,8 +191,11 @@ def parse_risk_config(config: Optional[dict]) -> dict:
         except (TypeError, ValueError):
             return default
 
+    _enabled = rc.get('enabled', defaults['enabled'])
+    if isinstance(_enabled, str):
+        _enabled = _enabled.strip().lower() in ('1', 'true', 'yes', 'on')
     return {
-        'enabled': bool(rc.get('enabled', defaults['enabled'])),
+        'enabled': bool(_enabled),
         'stop_loss_pct': _num('stop_loss_pct', defaults['stop_loss_pct']),
         'dd_limit_pct': _num('dd_limit_pct', defaults['dd_limit_pct']),
         'cooldown_days': int(_num('cooldown_days', defaults['cooldown_days']) or 0),
