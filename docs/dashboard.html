@@ -132,7 +132,7 @@ function render(D) {
   h += '<div class="ft">trade-pulse &#183; 数据生成 '+esc(D.generated_at)+'</div>';
   a.innerHTML = h;
 
-  drawEquity(D.equity||[]);
+  drawEquity(D.equity||[], D.paper_equity||[]);
   drawFactors(D.features||[]);
   drawPrice(D.prices||[]);
 }
@@ -168,30 +168,36 @@ function sz(c,w,h){
   var ctx=c.getContext('2d');ctx.scale(d,d);
   return {ctx:ctx,w:w,h:h};
 }
-function drawLine(ctx,vals,pl,pt,pw,ph,xS,lo,hi,color,label){
+function drawLine(ctx,vals,pl,pt,pw,ph,xS,lo,hi,color,label,dash){
   ctx.beginPath();
   for (var i=0;i<vals.length;i++){
     var x=pl+i*xS, y=pt+ph-(vals[i]-lo)/(hi-lo||1)*ph;
     i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
   }
+  ctx.setLineDash(dash||[]);
   ctx.strokeStyle=color; ctx.lineWidth=2; ctx.stroke();
+  ctx.setLineDash([]);
   ctx.fillStyle=color; ctx.font='12px sans-serif'; ctx.textAlign='left';
   ctx.fillText(label||'',pl+4,pt+14);
 }
-function drawEquity(data) {
+function drawEquity(data, paper) {
   var c=document.getElementById('ec');
   if(!c||data.length<3) return;
   var r=c.parentElement.getBoundingClientRect();
   var W=r.width||800,H=240,o=sz(c,W,H),ctx=o.ctx;
   var pl=40,pr=20,pt=20,pb=28,pw=W-pl-pr,ph=H-pt-pb;
   var vals=data.map(function(x){return x.equity;});
+  var pvals=(paper&&paper.length)?paper.map(function(x){return x.equity;}):[];
   var bh=data.map(function(x){return x.benchmark_equity;}).filter(function(v){return v!=null;});
   var lo=Math.min.apply(null,vals),hi=Math.max.apply(null,vals);
+  if(pvals.length){lo=Math.min(lo,Math.min.apply(null,pvals));hi=Math.max(hi,Math.max.apply(null,pvals));}
   if(bh.length){lo=Math.min(lo,Math.min.apply(null,bh));hi=Math.max(hi,Math.max.apply(null,bh));}
   var pad=(hi-lo)*0.05||0.1; lo-=pad; hi+=pad;
-  var xS=pw/(vals.length-1||1);
+  var n=Math.max(vals.length,pvals.length);
+  var xS=pw/(n-1||1);
   if(bh.length) drawLine(ctx,bh,pl,pt,pw,ph,xS,lo,hi,'rgba(139,148,158,0.5)','持有');
-  drawLine(ctx,vals,pl,pt,pw,ph,xS,lo,hi,'#58a6ff','策略');
+  drawLine(ctx,vals,pl,pt,pw,ph,xS,lo,hi,'#58a6ff','回测');
+  if(pvals.length) drawLine(ctx,pvals,pl,pt,pw,ph,xS,lo,hi,'#f59e0b','纸面盘',[6,4]);
   var eqf=document.getElementById('eqf');
   var eqm=document.getElementById('eqm');
   if(eqf) eqf.textContent=vals[vals.length-1].toFixed(3);
