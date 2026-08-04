@@ -77,6 +77,7 @@ def build_data() -> dict:
     daily = load_csv(DATA_DIR / "daily.csv")
     features = load_csv(DATA_DIR / "features_cache.csv")
     equity = load_csv(DATA_DIR / "backtest" / "equity_curve.csv")
+    paper_equity = load_csv(DATA_DIR / "paper" / "paper_equity.csv")
     trades = load_csv(DATA_DIR / "backtest" / "trades.csv")
     trade_log = load_csv(PROJECT_ROOT / "data" / "trade_log.csv")
 
@@ -109,6 +110,7 @@ def build_data() -> dict:
             }
         },
         "equity": equity[-300:],      # 最近 300 天权益
+        "paper_equity": paper_equity[-300:],  # 最近 300 天纸面盘权益（无则空列表）
         "prices": daily[-200:],       # 最近 200 天价格
         "features": features[-60:],   # 最近 60 天特征
         "trades": map_backtest_trades(trades[-15:]),  # 最近 15 笔回测交易（映射为展示 schema）

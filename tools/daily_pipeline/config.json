@@ -1,73 +1,73 @@
 {
-  "symbol": "588000",
-  "benchmark": "000688",
-  "provider": "akshare",
-  "data_dir": "data",
-  "weights": {
-    "momentum": 0.25,
-    "trend": 0.25,
-    "volume_price": 0.25,
-    "rsrs": 0.25
+ "symbol": "588000",
+ "benchmark": "000688",
+ "provider": "akshare",
+ "data_dir": "data",
+ "weights": {
+  "momentum": 0.25,
+  "trend": 0.25,
+  "volume_price": 0.25,
+  "rsrs": 0.25
+ },
+ "weights_by_regime": {
+  "enabled": false,
+  "ma60_slope_uptrend": 0.005,
+  "ma60_slope_downtrend": -0.005,
+  "uptrend": {
+   "momentum": 0.25,
+   "trend": 0.25,
+   "volume_price": 0.35,
+   "rsrs": 0.15
   },
-  "weights_by_regime": {
-    "enabled": false,
-    "ma60_slope_uptrend": 0.005,
-    "ma60_slope_downtrend": -0.005,
-    "uptrend": {
-      "momentum": 0.25,
-      "trend": 0.25,
-      "volume_price": 0.35,
-      "rsrs": 0.15
-    },
-    "downtrend": {
-      "momentum": 0.10,
-      "trend": 0.10,
-      "volume_price": 0.30,
-      "rsrs": 0.50
-    },
-    "sideways": {
-      "momentum": 0.25,
-      "trend": 0.25,
-      "volume_price": 0.25,
-      "rsrs": 0.25
-    }
+  "downtrend": {
+   "momentum": 0.1,
+   "trend": 0.1,
+   "volume_price": 0.3,
+   "rsrs": 0.5
   },
-  "thresholds": {
-    "buy": 0.1,
-    "sell": -0.07,
-    "confirm_days": 2,
-    "weekly_filter_percentile": 0.2
-  },
-  "adaptive_thresholds": {
-    "enabled": true,
-    "uptrend_buy": 0.1,
-    "uptrend_sell": -0.05,
-    "downtrend_buy": 0.15,
-    "downtrend_sell": -0.1,
-    "sideways_buy": 0.1,
-    "sideways_sell": -0.07,
-    "ma60_slope_uptrend": 0.005,
-    "ma60_slope_downtrend": -0.005
-  },
-  "weekly_modifier": {
-    "enabled": true,
-    "min_modifier": -0.3,
-    "max_modifier": 0.3,
-    "ma_percentile_low": 0.1,
-    "ma_percentile_high": 0.9
-  },
-  "risk_control": {
-    "enabled": false,
-    "stop_loss_pct": 0.08,
-    "dd_limit_pct": 0.10,
-    "cooldown_days": 5
-  },
-  "momentum_window": 5,
-  "trend_window": 20,
-  "rsrs_window": 18,
-  "rel_strength_window": 20,
-  "hist_window": 60,
-  "weekly_slope_window": 5,
-  "retry_count": 2,
-  "retry_delay_sec": 3
+  "sideways": {
+   "momentum": 0.25,
+   "trend": 0.25,
+   "volume_price": 0.25,
+   "rsrs": 0.25
+  }
+ },
+ "thresholds": {
+  "buy": 0.1,
+  "sell": -0.07,
+  "confirm_days": 2,
+  "weekly_filter_percentile": 0.2
+ },
+ "adaptive_thresholds": {
+  "enabled": true,
+  "uptrend_buy": 0.1,
+  "uptrend_sell": -0.05,
+  "downtrend_buy": 0.15,
+  "downtrend_sell": -0.1,
+  "sideways_buy": 0.1,
+  "sideways_sell": -0.07,
+  "ma60_slope_uptrend": 0.005,
+  "ma60_slope_downtrend": -0.005
+ },
+ "weekly_modifier": {
+  "enabled": true,
+  "min_modifier": -0.3,
+  "max_modifier": 0.3,
+  "ma_percentile_low": 0.1,
+  "ma_percentile_high": 0.9
+ },
+ "risk_control": {
+  "enabled": false,
+  "stop_loss_pct": 0.08,
+  "dd_limit_pct": 0.1,
+  "cooldown_days": 5
+ },
+ "momentum_window": 3,
+ "trend_window": 20,
+ "rsrs_window": 18,
+ "rel_strength_window": 20,
+ "hist_window": 60,
+ "weekly_slope_window": 5,
+ "retry_count": 2,
+ "retry_delay_sec": 3
 }

@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -153,6 +154,16 @@ def fetch_data(
         combined = combined.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
     else:
         combined = df_new
+
+    # 盘中防护：收盘前剔除当日未完成 bar（避免半日数据污染信号/特征）
+    # 15:00 收盘后允许保留当日完整日线；14:25 信号任务等盘中跑则剔除，
+    # 收盘后的 15:30 增量任务与次日任务自然补回。
+    if datetime.now().strftime("%H:%M") < "15:00":
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        n_before = len(combined)
+        combined = combined[combined["date"] != today_str].reset_index(drop=True)
+        if len(combined) < n_before:
+            print(f"  [INFO] 剔除当日盘中未收盘数据（{today_str}）")
 
     combined.to_csv(data_path, index=False)
     print(f"  [OK] {symbol}: {len(combined)} 条 ({combined['date'].min().date()} ~ {combined['date'].max().date()})")
