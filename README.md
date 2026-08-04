@@ -23,11 +23,21 @@ Rule-driven quantitative trading framework — from daily signals to live execut
 
 | 文档 | 内容 | 状态 |
 |:---|:---|:---:|
-| [docs/信号规则系统设计.md](docs/信号规则系统设计.md) | 信号系统架构（权重/阈值以 config.json 为准） | ✅ |
+| [docs/信号规则系统设计.md](docs/信号规则系统设计.md) | 信号系统架构（权重/阈值/窗口以 config.json 为准） | ✅ |
+| [docs/adr/](docs/adr/) | **决策档案（ADR-0001~0005）**：门禁体系/动量 3/风控关/攻守否决/窗口保留 | ✅ 08-04 |
 | [docs/工具库索引.md](docs/工具库索引.md) | 工具库活文档（cron 每月同步上游） | ✅ |
 | [docs/工具库调研_2026-08-02.md](docs/工具库调研_2026-08-02.md) | 工具库市场调研结论 | ✅ |
 | [docs/组合优化工具调研.md](docs/组合优化工具调研.md) | 配仓方案调研（自研波动率倒数加权） | ✅ |
 | [docs/Kronos 结论.md](docs/Kronos 结论.md) | Kronos 一页纸结论（❌ 无预测力） | ✅ |
+
+### 验证报告（docs/*_report_2026-08-04.md，08-04 门禁验证）
+
+| 报告 | 结论 |
+|:---|:---|
+| walk_forward_report | 5 折 OOS + DSR p=1.0——回测无法证明有效；参数高原 0.05~0.20 稳健 |
+| risk_control_report | 风控 24 组合无一过筛——止损 3.5 年仅触发 1-3 次，保险价值 |
+| window_search_report | 窗口非弱点；momentum 3 全面占优（→ 采纳，ADR-0002） |
+| regime_weight_report | 攻守分层 3 候选全不过——尾部改善净负（ADR-0004） |
 
 ### 日志（memory/）
 
