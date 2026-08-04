@@ -255,6 +255,47 @@ def ma60_slope(df: pd.DataFrame) -> pd.Series:
     return slope
 
 
+def compute_total_score(features: pd.DataFrame, config: dict) -> pd.Series:
+    """合成加权总分 total_score（等权 或 市场状态自适应权重）。
+
+    - enabled=false（默认）：逐位复现历史逻辑
+      total_score = Σ features[f].fillna(0) * config['weights'][f]，与旧版完全一致。
+    - enabled=true：按每行 ma60_slope 的市场状态选权重——
+      > ma60_slope_uptrend → uptrend 权重；< ma60_slope_downtrend → downtrend 权重；
+      其余（含 ma60_slope 为 NaN 的行）→ sideways 权重。
+      向量化：三组 mask 各算一次加权和，再用 np.where 组合。
+      键集约定：权重键与 config['weights'] 一致（w.keys() 遍历），
+      regime 权重中缺失的键按 0 计（total_score 可能因此小于 1 倍因子和，
+      配置时须保证每个 regime 的权重和 = 1）。
+    """
+    w = config['weights']
+
+    def weighted(weights: dict) -> pd.Series:
+        # 与历史合成式一致：仅累加 config['weights'] 中存在的因子，缺失键按 0 计
+        return sum(
+            features[f].fillna(0) * weights.get(f, 0)
+            for f in w.keys()
+            if f in features.columns
+        )
+
+    rb = config.get('weights_by_regime', {})
+    if rb.get('enabled', False):
+        slope = features.get('ma60_slope')
+        if slope is None:
+            # 无 ma60_slope 列（旧缓存）：无法判定状态，全部按 sideways 权重
+            return weighted(rb.get('sideways', {}))
+        mask_up = slope > rb.get('ma60_slope_uptrend', 0.005)
+        mask_dn = slope < rb.get('ma60_slope_downtrend', -0.005)
+        score_up = weighted(rb.get('uptrend', {}))
+        score_dn = weighted(rb.get('downtrend', {}))
+        score_side = weighted(rb.get('sideways', {}))
+        return pd.Series(
+            np.where(mask_up, score_up, np.where(mask_dn, score_dn, score_side)),
+            index=features.index,
+        )
+    return weighted(w)
+
+
 def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: dict,
                          force: bool = False) -> pd.DataFrame:
     """计算全量历史特征"""
@@ -281,7 +322,6 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
         compute_df = df_sym
         cached = pd.DataFrame()
 
-    w = config['weights']
     windows = {
         'momentum': config.get('momentum_window', 5),
         'trend': config.get('trend_window', 20),
@@ -300,18 +340,16 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
     features['weekly_modifier'] = weekly_modifier(compute_df, config)
     features['ma60_slope'] = ma60_slope(compute_df)
 
-    # 加权总分（从 config 动态读取因子，不硬编码）
-    score_parts = [
-        features[f].fillna(0) * w[f]
-        for f in w.keys()
-        if f in features.columns
-    ]
-    features['total_score'] = sum(score_parts)
+    # 加权总分（从 config 动态读取因子，不硬编码；支持市场状态自适应权重）
+    features['total_score'] = compute_total_score(features, config)
 
     # 合并缓存
     if not force and len(cached) > 0:
         combined = pd.concat([cached, features], ignore_index=True)
         combined = combined.drop_duplicates(subset=['date']).sort_values('date').reset_index(drop=True)
+        # 全行重算 total_score：确保旧缓存行与新行同口径
+        # （enabled=false 时与旧值逐位一致；enabled=true 时避免新旧口径混用）
+        combined['total_score'] = compute_total_score(combined, config)
     else:
         combined = features
 

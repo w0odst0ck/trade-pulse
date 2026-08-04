@@ -9,6 +9,29 @@
     "volume_price": 0.25,
     "rsrs": 0.25
   },
+  "weights_by_regime": {
+    "enabled": false,
+    "ma60_slope_uptrend": 0.005,
+    "ma60_slope_downtrend": -0.005,
+    "uptrend": {
+      "momentum": 0.25,
+      "trend": 0.25,
+      "volume_price": 0.35,
+      "rsrs": 0.15
+    },
+    "downtrend": {
+      "momentum": 0.10,
+      "trend": 0.10,
+      "volume_price": 0.30,
+      "rsrs": 0.50
+    },
+    "sideways": {
+      "momentum": 0.25,
+      "trend": 0.25,
+      "volume_price": 0.25,
+      "rsrs": 0.25
+    }
+  },
   "thresholds": {
     "buy": 0.1,
     "sell": -0.07,
