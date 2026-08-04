@@ -32,7 +32,7 @@ paper_trade.py — 纸面虚拟盘（paper trading）
 
 【一致性自检】--full 完成后自动执行：
   用 backtest.run_backtest(features_df, 生产config, '2023-01-01', 特征末日, 0.00055)
-  重跑一遍，对比两条 equity 曲线末端净值，差异 < 1e-6 为 PASS。
+  重跑一遍，逐行对比两条 equity 曲线：行数一致且全曲线最大差异 < 1e-6 才为 PASS。
 """
 
 import argparse
@@ -365,7 +365,7 @@ def _read_trades(paper_dir: Path) -> pd.DataFrame:
 
 
 def self_check(features_df: pd.DataFrame, config: dict, paper_equity: pd.DataFrame) -> bool:
-    """与 backtest.run_backtest 对比，末端净值差异 < 1e-6 为 PASS"""
+    """与 backtest.run_backtest 逐行对比：行数一致且全曲线最大差异 < 1e-6 为 PASS"""
     end = features_df['date'].max().strftime('%Y-%m-%d')
     print(f"\n🔍 一致性自检：vs backtest.run_backtest({START_DATE} ~ {end}, 费率 {COST_RATE})")
     bt = run_backtest(features_df, config, START_DATE, end, COST_RATE)
@@ -383,10 +383,15 @@ def self_check(features_df: pd.DataFrame, config: dict, paper_equity: pd.DataFra
 
     print(f"  paper 末端净值:    {paper_last:.9f}")
     print(f"  backtest 末端净值: {bt_last:.9f}")
-    print(f"  末端差异: {diff:.3e}"
-          + (f"   全曲线最大差异: {full_diff:.3e}" if full_diff is not None
-             else "   曲线行数不一致"))
-    ok = diff < 1e-6
+    print(f"  末端差异: {diff:.3e}")
+    if full_diff is None:
+        # 行数不一致直接 FAIL，不能只靠末端净值对比
+        print(f"  曲线行数不一致: paper {len(pv)} 行 vs backtest {len(bv)} 行 → 直接 FAIL")
+        ok = False
+    else:
+        print(f"  全曲线最大差异: {full_diff:.3e}")
+        # 行数一致时同时 enforce 末端差异与全曲线最大差异 < 1e-6 才算 PASS
+        ok = diff < 1e-6 and full_diff < 1e-6
     print(f"  结果: {'PASS ✓ 重放与回测同口径' if ok else 'FAIL ✗ 重放逻辑与回测不一致，需修复'}")
     return ok
 
