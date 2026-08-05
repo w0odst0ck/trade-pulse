@@ -17,11 +17,11 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
-from data_quality import quality_gate
+from data_quality import MAX_GAP_DAYS, quality_gate
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -52,6 +52,98 @@ def load_local(path: Path) -> pd.DataFrame:
         df = pd.read_csv(path, parse_dates=["date"])
         return df.sort_values("date").reset_index(drop=True)
     return pd.DataFrame()
+
+
+def validate_incremental(df: pd.DataFrame, require_date: str = None) -> dict:
+    """校验增量结果。返回 {ok: bool, last_date: str, issues: list[str]}
+
+    校验项：
+      - df 非空
+      - 最新日期 >= require_date（若传入，格式 YYYY-MM-DD）
+      - 最新一行 close 非空且 > 0
+      - 最新一行 volume 非空且 > 0，且与最近 20 日（不含当日）均量之比在
+        [0.1, 10] 区间内（防半日/异常量数据；均量为去首尾 10% 极端值后的
+        稳健均值，避免个别巨量日干扰；历史不足 20 日用可用行计算，
+        无历史则跳过区间检查）
+      - date 无重复、连续无缺失：全量查重复；相邻日期自然日间隔超
+        MAX_GAP_DAYS 记不连续（判据与 data_quality.py 风格一致，仅检查
+        最近 21 行增量核心窗口，避免 A 股长假间隔误报；存量历史由
+        health_check 的 scan_quality 覆盖）
+    """
+    issues: List[str] = []
+    if df is None or len(df) == 0:
+        issues.append("数据为空（df 无任何行）")
+        return {"ok": False, "last_date": "", "issues": issues}
+
+    df = df.sort_values("date").reset_index(drop=True)
+    dates = pd.to_datetime(df["date"])
+    last_ts = dates.iloc[-1]
+    last_date = last_ts.strftime("%Y-%m-%d")
+
+    # 1. require_date 门槛：最新日期必须 >= 要求日期
+    if require_date:
+        try:
+            require_ts = pd.to_datetime(require_date)
+        except (ValueError, TypeError):
+            issues.append(f"require_date 格式无效: {require_date}（应为 YYYY-MM-DD）")
+        else:
+            if last_ts < require_ts:
+                issues.append(f"最新日期 {last_date} 早于要求日期 {require_date}")
+
+    # 2. 最新一行 close 非空且 > 0
+    if "close" not in df.columns:
+        issues.append("缺少 close 列")
+    else:
+        last_close = df["close"].iloc[-1]
+        if pd.isna(last_close) or float(last_close) <= 0:
+            issues.append(f"最新一行 close 非法: {last_close}（应为 > 0）")
+
+    # 3. 最新一行 volume 非空且 > 0，且与最近 20 日均量之比在 [0.1, 10]
+    if "volume" not in df.columns:
+        issues.append("缺少 volume 列")
+    else:
+        last_vol = df["volume"].iloc[-1]
+        if pd.isna(last_vol) or float(last_vol) <= 0:
+            issues.append(f"最新一行 volume 非法: {last_vol}（应为 > 0）")
+        else:
+            prior = pd.to_numeric(df["volume"].iloc[:-1], errors="coerce").tail(20).dropna()
+            if len(prior) > 0:
+                # 去首尾各 10% 极端值后求均量：个别巨量/异常日会拉高均值，
+                # 导致正常缩量日被误判（如 2026-08 初 588000 缩量 vs 7 月末巨量）
+                p = prior.sort_values()
+                k = max(1, len(p) // 10)
+                trimmed = p.iloc[k:-k] if len(p) > 2 * k else p
+                avg = float(trimmed.mean()) if len(trimmed) > 0 else float(p.mean())
+                if avg > 0:
+                    ratio = float(last_vol) / avg
+                    if not 0.1 <= ratio <= 10.0:
+                        issues.append(
+                            f"最新 volume {last_vol} 与 20 日均量 {avg:.1f} 比值 "
+                            f"{ratio:.2f} 超出 [0.1, 10]"
+                        )
+
+    # 4. date 无重复、连续无缺失
+    dups = dates[dates.duplicated(keep=False)]
+    if len(dups) > 0:
+        dup_days = sorted({d.strftime("%Y-%m-%d") for d in dups})
+        issues.append(
+            f"date 存在 {len(dup_days)} 个重复日: "
+            f"{dup_days[:5]}{'...' if len(dup_days) > 5 else ''}"
+        )
+
+    recent = dates.tail(21)  # 增量核心窗口：当日 + 20 日均量所需历史
+    prev = None
+    for d in recent:
+        if prev is not None:
+            gap = (d - prev).days
+            if gap > MAX_GAP_DAYS:
+                issues.append(
+                    f"日期不连续: {prev.strftime('%Y-%m-%d')} 与 {d.strftime('%Y-%m-%d')} "
+                    f"间隔 {gap} 天 > {MAX_GAP_DAYS}"
+                )
+        prev = d
+
+    return {"ok": len(issues) == 0, "last_date": last_date, "issues": issues}
 
 
 def get_provider(name: str = "akshare"):
@@ -133,8 +225,10 @@ def fetch_data(
     if df_new is None or len(df_new) == 0:
         if len(local_df) > 0:
             print(f"  ⚠️ 数据源均不可用，使用本地缓存（{len(local_df)} 条）")
+            print(f"  [FETCH_FAIL] {symbol} 数据源均不可用（主源 {provider_name} + 备用均失败），使用本地缓存")
             local_df.attrs["stale"] = True
             return local_df
+        print(f"  [FETCH_FAIL] {symbol} 无法获取数据，且无本地缓存")
         raise RuntimeError(f"无法获取 {symbol} 数据，且无本地缓存")
 
     # 数据质量闸门（合并前最后一道校验）
@@ -144,8 +238,10 @@ def fetch_data(
     if df_new is None or len(df_new) == 0:
         if len(local_df) > 0:
             print(f"  ⚠️ 数据全部被质量闸门拦截，使用本地缓存（{len(local_df)} 条）")
+            print(f"  [FETCH_FAIL] {symbol} 数据全部被质量闸门拦截，使用本地缓存")
             local_df.attrs["stale"] = True
             return local_df
+        print(f"  [FETCH_FAIL] {symbol} 数据全部被质量闸门拦截，且无本地缓存")
         raise RuntimeError(f"{symbol} 数据全部被质量闸门拦截，且无本地缓存")
 
     # 合并增量
@@ -176,12 +272,25 @@ def main():
     parser.add_argument("--start", default="2023-01-01", help="起始日期 (YYYY-MM-DD)")
     parser.add_argument("--provider", default="akshare", choices=["akshare", "eastmoney", "baostock"],
                         help="数据源")
+    parser.add_argument("--require-date", default=None,
+                        help="增量完成后校验最新日期 >= 该日期 (YYYY-MM-DD)，不满足则退出码 1")
     args = parser.parse_args()
 
     config = load_config()
     print("\n📥 数据拉取")
     df_sym = fetch_data(config["symbol"], args.start, args.force, args.provider)
     df_bench = fetch_data(config["benchmark"], args.start, args.force, args.provider)
+
+    if args.require_date:
+        for name, df in ((config["symbol"], df_sym), (config["benchmark"], df_bench)):
+            result = validate_incremental(df, require_date=args.require_date)
+            if not result["ok"]:
+                print(f"  [FAIL] {name} 数据完整性校验失败（require-date={args.require_date}）")
+                for issue in result["issues"]:
+                    print(f"    - {issue}")
+                sys.exit(1)
+            print(f"  [OK] {name} 数据完整，最新日期 {result['last_date']}")
+
     return df_sym, df_bench
 
 
