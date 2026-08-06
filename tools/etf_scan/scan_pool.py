@@ -17,7 +17,6 @@
 """
 
 import argparse
-import json
 import math
 import os
 import sys
@@ -162,7 +161,7 @@ def fetch_all(force: bool = True, only_missing: bool = False) -> Dict[str, Tuple
         time.sleep(1.5 if force else 0.5)
 
     print(f"\n===== 拉取汇总: 成功 {ok} / 失败 {fail} =====")
-    for symbol, (df, err) in results.items():
+    for symbol, (_, err) in results.items():
         if err is not None:
             print(f"  FAIL {symbol} {POOL_NAME.get(symbol, '')}: {err}")
     return results
@@ -309,7 +308,6 @@ def cointegration_screen() -> pd.DataFrame:
     """每只候选 vs 588000 的 EG 两步协整检验 + 全段 3 等分滚动稳定性"""
     closes = load_closes()
     base = closes[BASE_SYMBOL].values
-    base_dates = closes.index
 
     rows = []
     for symbol, name, _ in ETF_POOL:
