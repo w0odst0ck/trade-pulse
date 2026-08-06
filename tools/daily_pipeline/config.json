@@ -1,7 +1,11 @@
 {
  "symbol": "588000",
  "benchmark": "000688",
- "provider": "akshare",
+ "provider": "tencent",
+ "markets": {
+  "588000": "sh",
+  "000688": "sh"
+ },
  "data_dir": "data",
  "weights": {
   "momentum": 0.25,

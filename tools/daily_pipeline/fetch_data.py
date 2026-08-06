@@ -31,7 +31,10 @@ PROVIDER_DIR = PROJECT_ROOT / "tools" / "data_provider"
 # 导入 Provider
 import sys
 sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-from data_provider import AkShareProvider, EastMoneyProvider, BaoStockProvider
+from data_provider import AkShareProvider, EastMoneyProvider, BaoStockProvider, TencentProvider
+
+# Provider 固定 fallback 顺序（取除主源外的其余源按序降级）
+PROVIDER_ORDER = ["akshare", "tencent", "eastmoney", "baostock"]
 
 
 def load_config() -> dict:
@@ -49,7 +52,8 @@ def get_data_path(symbol: str) -> Path:
 def load_local(path: Path) -> pd.DataFrame:
     """读取本地缓存数据"""
     if path.exists():
-        df = pd.read_csv(path, parse_dates=["date"])
+        # symbol 列强制 str：避免 '000688' 被 pandas 推断为 int 688（前导零丢失）
+        df = pd.read_csv(path, parse_dates=["date"], dtype={"symbol": str})
         return df.sort_values("date").reset_index(drop=True)
     return pd.DataFrame()
 
@@ -150,19 +154,36 @@ def get_provider(name: str = "akshare"):
     """获取 Provider 实例"""
     providers = {
         "akshare": AkShareProvider(),
+        "tencent": TencentProvider(),
         "eastmoney": EastMoneyProvider(),
         "baostock": BaoStockProvider(),
     }
     return providers.get(name, providers["akshare"])
 
 
+def resolve_tencent_symbol(symbol: str) -> str:
+    """按 config['markets'] 将 symbol 映射为腾讯带前缀形式（如 588000 -> sh588000）
+
+    纯代码前缀规则无法区分「000xxx 上证指数」与「000xxx 深市股票」
+    （如 000688 既可能是 sh000688 科创50指数，也可能是 sz000688 深市个股），
+    必须显式指定市场。无映射时原样返回，由 TencentProvider._market_prefix 兜底。
+    """
+    market = (load_config().get("markets") or {}).get(symbol)
+    return f"{market}{symbol}" if market else symbol
+
+
 def fetch_data(
     symbol: str,
     start_date: str,
     force: bool = False,
-    provider_name: str = "akshare",
+    provider_name: str = None,
 ) -> pd.DataFrame:
-    """拉取数据，自动增量更新"""
+    """拉取数据，自动增量更新
+
+    provider_name 为 None 时使用 config.json 的 provider 字段（默认主源）。
+    """
+    if provider_name is None:
+        provider_name = load_config().get("provider", "akshare")
     # 东财系（AkShare/EastMoney）走代理必失败（mihomo 规则拒绝），强制直连
     os.environ.pop("http_proxy", None)
     os.environ.pop("https_proxy", None)
@@ -189,10 +210,12 @@ def fetch_data(
     provider = get_provider(provider_name)
     df_new = None
     retries = config.get("retry_count", 2)
+    # 腾讯源需带市场前缀的 symbol（config['markets'] 映射），其余源用原始 symbol
+    call_symbol = resolve_tencent_symbol(symbol) if provider_name == "tencent" else symbol
 
     for attempt in range(retries + 1):
         try:
-            df_new = provider.fetch_daily(symbol, start)
+            df_new = provider.fetch_daily(call_symbol, start)
             if df_new is not None and len(df_new) > 0:
                 df_new = provider.normalize(df_new, symbol)
                 break
@@ -202,16 +225,18 @@ def fetch_data(
         if attempt < retries:
             time.sleep(config.get("retry_delay_sec", 3))
 
-    # 备用 Provider：东财系 → baostock（独立源灾备）
-    fallbacks = ["eastmoney", "baostock"] if provider_name == "akshare" else ["akshare", "baostock"]
+    # 备用 Provider：按固定顺序取除主源外的其余源降级
+    fallbacks = [p for p in PROVIDER_ORDER if p != provider_name]
     for fb_name in fallbacks:
         if df_new is not None and len(df_new) > 0:
             break
         print(f"  [FALLBACK] 切 {fb_name}...")
         fb = get_provider(fb_name)
+        # 主源/备用统一在调用点处理：tencent 源用带市场前缀的 symbol
+        fb_symbol = resolve_tencent_symbol(symbol) if fb_name == "tencent" else symbol
         for attempt in range(retries + 1):
             try:
-                df_new = fb.fetch_daily(symbol, start)
+                df_new = fb.fetch_daily(fb_symbol, start)
                 if df_new is not None and len(df_new) > 0:
                     df_new = fb.normalize(df_new, symbol)
                     break
@@ -270,8 +295,9 @@ def main():
     parser = argparse.ArgumentParser(description="拉取 588000 + 000688 日线数据")
     parser.add_argument("--force", action="store_true", help="强制全量重拉")
     parser.add_argument("--start", default="2023-01-01", help="起始日期 (YYYY-MM-DD)")
-    parser.add_argument("--provider", default="akshare", choices=["akshare", "eastmoney", "baostock"],
-                        help="数据源")
+    parser.add_argument("--provider", default=None,
+                        choices=["akshare", "tencent", "eastmoney", "baostock"],
+                        help="数据源（默认取 config.json 的 provider 字段）")
     parser.add_argument("--require-date", default=None,
                         help="增量完成后校验最新日期 >= 该日期 (YYYY-MM-DD)，不满足则退出码 1")
     args = parser.parse_args()
