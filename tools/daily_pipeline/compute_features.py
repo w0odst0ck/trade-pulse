@@ -54,8 +54,8 @@ def save_features_cache(df: pd.DataFrame, symbol: str):
     """写全量特征缓存"""
     config = load_config()
     data_dir = PROJECT_ROOT / config["data_dir"]
-    data_dir.mkdir(parents=True, exist_ok=True)
     path = data_dir / symbol / "features_cache.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
 
 
@@ -297,9 +297,13 @@ def compute_total_score(features: pd.DataFrame, config: dict) -> pd.Series:
 
 
 def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: dict,
-                         force: bool = False) -> pd.DataFrame:
-    """计算全量历史特征"""
-    symbol = config['symbol']
+                         force: bool = False, symbol: str = None) -> pd.DataFrame:
+    """计算全量历史特征
+
+    symbol 为空时取 config['symbol']（默认标的）；传入时按 data/{symbol} 读写缓存，
+    因子计算本身与标的无关（相对强度用传入的 df_bench，默认基准 config['benchmark']）。
+    """
+    symbol = symbol or config['symbol']
 
     # 读取已有缓存
     cached = load_features_cache(symbol) if not force else pd.DataFrame()
@@ -378,27 +382,31 @@ def get_latest_features(symbol: str) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='计算 588000 技术指标特征')
+    parser = argparse.ArgumentParser(description='计算 ETF 技术指标特征（默认 588000，可 --symbol 指定任意标的）')
+    parser.add_argument('--symbol', default=None, help='标的代码（默认 config.json 的 symbol）')
+    parser.add_argument('--benchmark', default=None, help='基准指数代码（默认 config.json 的 benchmark）')
     parser.add_argument('--force', action='store_true', help='全量重算')
     parser.add_argument('--output', choices=['panel', 'history', 'all'], default='panel',
                        help='输出内容：panel=最新因子 | history=全量历史 | all=两者')
     args = parser.parse_args()
 
     config = load_config()
+    symbol = args.symbol or config['symbol']
+    benchmark = args.benchmark or config['benchmark']
     print("\n📊 特征计算")
-    df_sym = load_data(config['symbol'])
-    df_bench = load_data(config['benchmark'])
+    df_sym = load_data(symbol)
+    df_bench = load_data(benchmark)
 
-    features = compute_all_features(df_sym, df_bench, config, args.force)
+    features = compute_all_features(df_sym, df_bench, config, args.force, symbol=symbol)
 
     if args.output in ('panel', 'all'):
         print("\n--- 最新因子 ---")
-        latest = get_latest_features(config['symbol'])
+        latest = get_latest_features(symbol)
         for k, v in latest.items():
             print(f"  {k}: {v}")
 
     if args.output in ('history', 'all'):
-        history_path = Path(PROJECT_ROOT) / config['data_dir'] / config['symbol'] / 'features_history.csv'
+        history_path = Path(PROJECT_ROOT) / config['data_dir'] / symbol / 'features_history.csv'
         features.to_csv(history_path, index=False)
         print(f"\n  [OK] 历史特征已写入: {history_path}")
 

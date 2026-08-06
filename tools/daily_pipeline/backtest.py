@@ -860,10 +860,11 @@ def print_report(
     n_days: int,
     cost_rate: float,
     factor_attr: Optional[dict] = None,
+    symbol: str = "588000",
 ):
     """打印控制台报告"""
     print(f"\n{'═' * 55}")
-    print(f"  588000 日线择时回测报告")
+    print(f"  {symbol} 日线择时回测报告")
     print(f"  区间: {start} ~ {end}  ({n_days} 个交易日)")
     print(f"  费率: 单边 {cost_rate*10000:.1f}‱")
     print(f"{'═' * 55}")
@@ -978,11 +979,12 @@ def save_outputs(result: dict, bh_equity: pd.DataFrame, output_dir: str, metrics
 
 def main():
     parser = argparse.ArgumentParser(
-        description='588000 日线择时回测',
+        description='ETF 日线择时回测（默认 588000，可 --symbol 指定任意标的）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   python backtest.py                                     # 全量回测
+  python backtest.py --symbol 515050                     # 回测其他标的（data/{symbol}/features_cache.csv）
   python backtest.py --start 2023-06-01 --end 2025-12-31 # 指定区间
   python backtest.py --cost 0.001                        # 单边万10费率
   python backtest.py --factor-attribution                # 因子归因
@@ -990,11 +992,12 @@ def main():
   python backtest.py --output ./bt_results               # 自定义输出目录
         """
     )
+    parser.add_argument('--symbol', default=None, help='标的代码（默认 config.json 的 symbol）')
     parser.add_argument('--start', default='2023-01-01', help='回测起始 (YYYY-MM-DD)')
     parser.add_argument('--end', default=None, help='回测结束 (YYYY-MM-DD)，默认今天')
     parser.add_argument('--cost', type=float, default=0.00055,
                         help='单边交易费率（含佣金+滑点），默认万5.5')
-    parser.add_argument('--output', default=None, help='输出目录（默认 data/588000/backtest/）')
+    parser.add_argument('--output', default=None, help='输出目录（默认 data/{symbol}/backtest/）')
     parser.add_argument('--factor-attribution', action='store_true',
                         help='同时跑因子归因分析')
     parser.add_argument('--regime-analysis', action='store_true',
@@ -1020,7 +1023,12 @@ def main():
         else:
             print(f"  [WARN] 策略文件不存在: {strategy_path}，使用默认配置")
 
-    symbol = config['symbol']
+    symbol = args.symbol or config['symbol']
+    # 非默认标的且未显式指定策略：提示不套用 588000 调优参数（strategies/588000.yaml），
+    # 使用 config.json 默认参数（与 --strategy 指定文件缺失时的 WARN 行为一致）
+    if args.symbol and not args.strategy and (args.symbol != config['symbol']):
+        print(f"  [INFO] --symbol {args.symbol}：未指定 --strategy，使用 config.json 默认参数"
+              f"（不加载 strategies/588000.yaml）")
     end = args.end or date.today().strftime('%Y-%m-%d')
     output_dir = args.output or str(Path(PROJECT_ROOT) / config['data_dir'] / symbol / 'backtest')
 
@@ -1071,7 +1079,7 @@ def main():
 
     # ── 报告 ──
     print_report(metrics, bh_metrics, ma_metrics, yearly,
-                 args.start, end, n_days, args.cost, factor_attr)
+                 args.start, end, n_days, args.cost, factor_attr, symbol=symbol)
 
     if regime_results:
         print_regime_report(regime_results, bh_metrics)

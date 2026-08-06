@@ -8,6 +8,8 @@ health_check.py — trade-pulse 系统健康检查
   3. data.json 生成时间：是否过期（>2 天）
   4. 状态机文件存在
   5. 最近一次 git 提交时间（UI 部署是否在跑）
+  6. 四源健康度：tencent / akshare / eastmoney / baostock 各拉一次探活，
+     全 OK 时一行带过，有 FAIL 才输出每源状态表告警（源故障标注，退出码非 0）
 
 输出：
   --json：机器可读（供 cron 判断）
@@ -20,9 +22,10 @@ health_check.py — trade-pulse 系统健康检查
 
 import argparse
 import json
+import os
 import subprocess
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +33,21 @@ import pandas as pd
 from data_quality import scan_quality
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+SCRIPT_DIR = Path(__file__).parent
+CONFIG_PATH = SCRIPT_DIR / "config.json"
 DATA_DIR = PROJECT_ROOT / "data" / "588000"
 DOCS_DIR = PROJECT_ROOT / "docs"
+
+# 腾讯 fqkline 接口（与 data_provider/tencent.py 同源）
+TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+TENCENT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://gu.qq.com/",
+}
 
 # 交易日历（简化：周末不算交易日）
 def is_weekend(d: date) -> bool:
@@ -174,6 +190,120 @@ def check_git() -> dict:
         return {"ok": True, "msg": f"git 检查跳过: {e}"}
 
 
+# ── 四源健康度 ─────────────────────────────────────────
+
+
+def _clear_proxy_env():
+    """东财系（AkShare/EastMoney）走代理必失败（mihomo 规则拒绝），
+    与 fetch_data.py 一致强制直连"""
+    for k in ("http_proxy", "https_proxy", "all_proxy",
+              "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.pop(k, None)
+
+
+def _main_symbol() -> str:
+    """当前主标的（config.json 的 symbol，与 fetch_data 拉取对象一致）"""
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f).get("symbol", "588000")
+    except Exception:
+        return "588000"
+
+
+def _recent_start(days: int = 7) -> str:
+    """最近 N 天起点（YYYY-MM-DD），探活只需近期 1 根"""
+    return (date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _check_tencent(symbol: str) -> dict:
+    """腾讯源：web.ifzq.gtimg.cn fqkline 拉 1 根"""
+    _clear_proxy_env()
+    try:
+        import requests
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from fetch_data import resolve_tencent_symbol
+        tsym = resolve_tencent_symbol(symbol)  # 588000 -> sh588000（config['markets'] 映射）
+        end = date.today().strftime("%Y-%m-%d")
+        start = _recent_start()
+        url = (f"{TENCENT_KLINE_URL}?param={tsym},day,{start},{end},1,qfq")
+        resp = requests.get(url, headers=TENCENT_HEADERS, timeout=10)
+        data = resp.json()
+        node = (data.get("data") or {}).get(tsym) or {}
+        klines = node.get("qfqday") or node.get("day") or []
+        if klines:
+            return {"ok": True, "msg": f"fqkline 正常（最近 {klines[-1][0]}）"}
+        return {"ok": False, "msg": "fqkline 返回空（接口可达但无数据）"}
+    except Exception as e:
+        return {"ok": False, "msg": f"请求失败: {e}"}
+
+
+def _check_akshare(symbol: str) -> dict:
+    """AkShare 源（东财接口；当前 IP 风控中可能失败，属源故障而非代码问题）"""
+    _clear_proxy_env()
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from data_provider.akshare import AkShareProvider
+        df = AkShareProvider().fetch_daily(symbol, _recent_start())
+        if df is not None and len(df) > 0:
+            latest = df["date"].max()
+            latest = latest.date() if hasattr(latest, "date") else latest
+            return {"ok": True, "msg": f"东财接口正常（最新 {latest}）"}
+        return {"ok": False, "msg": "东财接口返回空数据"}
+    except Exception as e:
+        return {"ok": False, "msg": f"源故障: {e}"}
+
+
+def _check_eastmoney(symbol: str) -> dict:
+    """EastMoney 源（东财直连接口；与 AkShare 同受 IP 风控影响）"""
+    _clear_proxy_env()
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from data_provider.fallback import EastMoneyProvider
+        df = EastMoneyProvider().fetch_daily(symbol, _recent_start())
+        if df is not None and len(df) > 0:
+            latest = df["date"].max()
+            latest = latest.date() if hasattr(latest, "date") else latest
+            return {"ok": True, "msg": f"东财接口正常（最新 {latest}）"}
+        return {"ok": False, "msg": "东财接口返回空数据"}
+    except Exception as e:
+        return {"ok": False, "msg": f"源故障: {e}"}
+
+
+def _check_baostock(symbol: str) -> dict:
+    """BaoStock 源：login 测试（登录式 API，login 成功即链路可用）"""
+    _clear_proxy_env()
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from data_provider.baostock import BaoStockProvider
+        provider = BaoStockProvider()
+        bs = provider._login()
+        bs.logout()
+        return {"ok": True, "msg": "login/logout 正常"}
+    except Exception as e:
+        return {"ok": False, "msg": f"login 失败: {e}"}
+
+
+def check_provider_health() -> dict:
+    """四源健康度：{ok, msg, sources: {name: {ok, msg}}}
+
+    每源一次探活请求；全部 OK 时 msg 汇总一行，有 FAIL 时 msg 列出异常源，
+    明细在各源的 sources[name] 中（人类可读输出时展开为状态表）。
+    """
+    symbol = _main_symbol()
+    sources = {
+        "tencent": _check_tencent(symbol),
+        "akshare": _check_akshare(symbol),
+        "eastmoney": _check_eastmoney(symbol),
+        "baostock": _check_baostock(symbol),
+    }
+    failed = [n for n, s in sources.items() if not s["ok"]]
+    if not failed:
+        msg = "四源健康（tencent/akshare/eastmoney/baostock）"
+    else:
+        msg = f"{len(failed)} 个数据源异常: {', '.join(failed)}"
+    return {"ok": not failed, "msg": msg, "sources": sources}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
@@ -186,6 +316,7 @@ def main():
         "state": check_state(),
         "quality": check_data_quality(),
         "git": check_git(),
+        "providers": check_provider_health(),
     }
 
     if args.json:
@@ -196,6 +327,11 @@ def main():
         for name, c in checks.items():
             mark = "✅" if c["ok"] else "❌"
             print(f"  {mark} [{name:<10}] {c['msg']}")
+            # 四源有 FAIL 时才展开每源状态表（全 OK 时上面一行带过，保持静默）
+            if name == "providers" and not c["ok"]:
+                for sname, s in c.get("sources", {}).items():
+                    smark = "✅" if s["ok"] else "❌"
+                    print(f"      {smark} {sname:<9} {s['msg']}")
 
     # 退出码：有异常返回 1
     failed = [k for k, v in checks.items() if not v["ok"]]
