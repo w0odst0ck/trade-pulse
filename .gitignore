@@ -23,3 +23,6 @@ tools/ui/dashboard.html
 /tools/kronos/
 /tools/level2-toolkit/
 /tools/portfolio_opt/.venv/
+
+# 运行日志（分钟拉取等）
+logs/
