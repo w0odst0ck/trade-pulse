@@ -75,7 +75,10 @@ def main():
 
     # --- 4. 输出 ---
     if args.json:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        # result 的 date 来自 features 可能是 Timestamp，需先转 str（否则 json.dumps 崩）
+        out = dict(result)
+        out['date'] = str(out.get('date', ''))
+        print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
         print_panel(result, verbose=True)
 

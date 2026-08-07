@@ -28,6 +28,9 @@ if [ $RC -ne 0 ]; then
   exit $RC
 fi
 
+# 1.5 接近翻多预警（0.05 <= 综合分 < 0.1 时推飞书文本；其余静默）
+bash tools/daily_pipeline/signal_watch.sh
+
 # 2. 纸面盘增量（与回测同口径，无状态文件自动全量）
 python3 tools/daily_pipeline/paper_trade.py --update
 PAPER_RC=$?
