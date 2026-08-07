@@ -5,10 +5,12 @@ health_check.py — trade-pulse 系统健康检查
 检查项：
   1. 数据滞后：daily.csv 最新日期 vs 今天（交易日）差距
   2. 特征/信号是否正常：features_cache 最新日期
-  3. data.json 生成时间：是否过期（>2 天）
-  4. 状态机文件存在
-  5. 最近一次 git 提交时间（UI 部署是否在跑）
-  6. 四源健康度：tencent / akshare / eastmoney / baostock 各拉一次探活，
+  3. 特征滞后检查：features_cache 最新日期 vs 最近交易日（严格判定）
+  4. data.json 生成时间：是否过期（>2 天）
+  5. 状态机文件存在
+  6. 最近一次 git 提交时间（UI 部署是否在跑）
+  7. 五源健康度：tencent / sina / akshare / eastmoney / baostock 各拉一次探活；
+     冷却中的源（source_health.json 的 cooldown_until 未到期）跳过探活不算故障，
      全 OK 时一行带过，有 FAIL 才输出每源状态表告警（源故障标注，退出码非 0）
 
 输出：
@@ -25,6 +27,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -94,6 +97,55 @@ def check_data_staleness() -> dict:
     return {
         "ok": ok,
         "msg": f"数据最新 {latest}（最近交易日 {cursor}，滞后 {lag_days} 天）",
+        "latest": str(latest),
+        "lag_days": lag_days,
+    }
+
+
+def _recent_trading_day() -> date:
+    """最近一个交易日（复用 trading_calendar 的 is_trading_day/prev_trading_day）"""
+    if str(SCRIPT_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRIPT_DIR))
+    from trading_calendar import is_trading_day, prev_trading_day
+    today = date.today()
+    if is_trading_day(today):
+        return today
+    return prev_trading_day(today)
+
+
+def check_features_staleness() -> dict:
+    """检查特征缓存滞后（严格判定）：特征最新日期 < 最近交易日 → 滞后
+
+    与 check_features 的宽松判定（允许 2 天）不同：本检查按交易日对齐，
+    特征末日未到最近交易日即报滞后，供 14:25 daily_panel 之外的时段感知特征掉队。
+    """
+    path = DATA_DIR / "features_cache.csv"
+    if not path.exists():
+        return {"ok": False, "msg": "features_cache.csv 不存在"}
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        return {"ok": False, "msg": f"features_cache.csv 解析失败: {e}"}
+
+    # features_cache 按日期升序，最后一行即最新（_latest_date 取 max 更稳健）
+    latest = _latest_date(df, path)
+    if latest is None:
+        return {"ok": False, "msg": "features_cache.csv 为空或缺少 date 列"}
+    latest = latest.date()
+
+    recent = _recent_trading_day()
+    lag_days = (recent - latest).days
+    if latest < recent:
+        return {
+            "ok": False,
+            "msg": f"特征滞后 {lag_days} 天（特征最新 {latest}，最近交易日 {recent}）",
+            "latest": str(latest),
+            "lag_days": lag_days,
+        }
+    return {
+        "ok": True,
+        "msg": f"特征已更新至 {latest}（最近交易日 {recent}）",
         "latest": str(latest),
         "lag_days": lag_days,
     }
@@ -190,7 +242,7 @@ def check_git() -> dict:
         return {"ok": True, "msg": f"git 检查跳过: {e}"}
 
 
-# ── 四源健康度 ─────────────────────────────────────────
+# ── 五源健康度 ─────────────────────────────────────────
 
 
 def _clear_proxy_env():
@@ -269,6 +321,24 @@ def _check_eastmoney(symbol: str) -> dict:
         return {"ok": False, "msg": f"源故障: {e}"}
 
 
+def _check_sina(symbol: str) -> dict:
+    """新浪源：SinaProvider 拉最近数据（与 fetch_data 同实现：带市场前缀）"""
+    _clear_proxy_env()
+    try:
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from data_provider.sina import SinaProvider
+        from fetch_data import resolve_tencent_symbol
+        call_symbol = resolve_tencent_symbol(symbol)  # 588000 -> sh588000（config['markets'] 映射）
+        df = SinaProvider().fetch_daily(call_symbol, _recent_start())
+        if df is not None and len(df) > 0:
+            latest = df["date"].max()
+            latest = latest.date() if hasattr(latest, "date") else latest
+            return {"ok": True, "msg": f"新浪接口正常（最新 {latest}）"}
+        return {"ok": False, "msg": "新浪接口返回空数据"}
+    except Exception as e:
+        return {"ok": False, "msg": f"源故障: {e}"}
+
+
 def _check_baostock(symbol: str) -> dict:
     """BaoStock 源：login 测试（登录式 API，login 成功即链路可用）"""
     _clear_proxy_env()
@@ -283,22 +353,69 @@ def _check_baostock(symbol: str) -> dict:
         return {"ok": False, "msg": f"login 失败: {e}"}
 
 
-def check_provider_health() -> dict:
-    """四源健康度：{ok, msg, sources: {name: {ok, msg}}}
+def _load_cooldown() -> tuple:
+    """读取 source_health.json，返回 (冷却中的源名集合, 警告信息)
 
-    每源一次探活请求；全部 OK 时 msg 汇总一行，有 FAIL 时 msg 列出异常源，
+    冷却判定与 fetch_data.py 一致：entry["cooldown_until"] > now → 冷却中。
+    遍历所有 symbol：任一 symbol 下某源处于冷却即认为该源冷却中（跳过探活）。
+    文件缺失/损坏 → 返回 (空集, 警告)，由调用方降级为全部真实探活（不静默跳过）。
+    """
+    path = SCRIPT_DIR / "source_health.json"
+    if not path.exists():
+        warn = "source_health.json 缺失，冷却跳过失效，降级为全部真实探活"
+        return set(), warn
+    try:
+        with open(path, encoding="utf-8") as f:
+            health = json.load(f)
+    except Exception as e:
+        warn = f"source_health.json 解析失败（{e}），冷却跳过失效，降级为全部真实探活"
+        return set(), warn
+
+    now_ts = time.time()
+    cooldown = set()
+    if not isinstance(health, dict):
+        warn = "source_health.json 结构异常，冷却跳过失效，降级为全部真实探活"
+        return set(), warn
+    for symbol_health in health.values():
+        if not isinstance(symbol_health, dict):
+            continue
+        for src, entry in symbol_health.items():
+            if isinstance(entry, dict) and entry.get("cooldown_until", 0) > now_ts:
+                cooldown.add(src)
+    return cooldown, ""
+
+
+def check_provider_health() -> dict:
+    """五源健康度：{ok, msg, sources: {name: {ok, msg}}}
+
+    每源一次探活请求；冷却中的源（source_health.json 的 cooldown_until 未到期）
+    不真实请求，直接标 ok=True + SKIP(cooldown)（冷却中属预期状态，非故障）；
+    source_health.json 缺失/损坏时降级为全部真实探活并输出 WARN。
+    全部 OK 时 msg 汇总一行，有 FAIL 时 msg 列出异常源，
     明细在各源的 sources[name] 中（人类可读输出时展开为状态表）。
     """
     symbol = _main_symbol()
-    sources = {
-        "tencent": _check_tencent(symbol),
-        "akshare": _check_akshare(symbol),
-        "eastmoney": _check_eastmoney(symbol),
-        "baostock": _check_baostock(symbol),
+    cooldown_sources, warn = _load_cooldown()
+    if warn:
+        print(f"  [WARN] {warn}", file=sys.stderr)
+
+    checkers = {
+        "tencent": _check_tencent,
+        "sina": _check_sina,
+        "akshare": _check_akshare,
+        "eastmoney": _check_eastmoney,
+        "baostock": _check_baostock,
     }
+    sources = {}
+    for name, fn in checkers.items():
+        if name in cooldown_sources:
+            sources[name] = {"ok": True, "msg": "SKIP(cooldown)，跳过探活"}
+        else:
+            sources[name] = fn(symbol)
+
     failed = [n for n, s in sources.items() if not s["ok"]]
     if not failed:
-        msg = "四源健康（tencent/akshare/eastmoney/baostock）"
+        msg = "五源健康（tencent/sina/akshare/eastmoney/baostock）"
     else:
         msg = f"{len(failed)} 个数据源异常: {', '.join(failed)}"
     return {"ok": not failed, "msg": msg, "sources": sources}
@@ -312,6 +429,7 @@ def main():
     checks = {
         "data": check_data_staleness(),
         "features": check_features(),
+        "features_staleness": check_features_staleness(),
         "data_json": check_data_json(),
         "state": check_state(),
         "quality": check_data_quality(),
