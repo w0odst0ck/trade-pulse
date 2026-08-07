@@ -114,39 +114,47 @@ def _recent_trading_day() -> date:
 
 
 def check_features_staleness() -> dict:
-    """检查特征缓存滞后（严格判定）：特征最新日期 < 最近交易日 → 滞后
+    """检查特征缓存滞后：特征末日 < 数据末日 → 滞后
 
-    与 check_features 的宽松判定（允许 2 天）不同：本检查按交易日对齐，
-    特征末日未到最近交易日即报滞后，供 14:25 daily_panel 之外的时段感知特征掉队。
+    语义：特征应跟上已到位的数据（数据可能因腾讯定型晚而滞后交易日，
+    特征跟随数据即可，无需追赶尚未发布的交易日）。
     """
-    path = DATA_DIR / "features_cache.csv"
-    if not path.exists():
+    feat_path = DATA_DIR / "features_cache.csv"
+    data_path = DATA_DIR / "daily.csv"
+    if not feat_path.exists():
         return {"ok": False, "msg": "features_cache.csv 不存在"}
+    if not data_path.exists():
+        return {"ok": False, "msg": "daily.csv 不存在（无法对比）"}
 
     try:
-        df = pd.read_csv(path)
+        feat_df = pd.read_csv(feat_path)
+        data_df = pd.read_csv(data_path)
     except Exception as e:
         return {"ok": False, "msg": f"features_cache.csv 解析失败: {e}"}
 
-    # features_cache 按日期升序，最后一行即最新（_latest_date 取 max 更稳健）
-    latest = _latest_date(df, path)
-    if latest is None:
+    feat_latest = _latest_date(feat_df, feat_path)
+    data_latest = _latest_date(data_df, data_path)
+    if feat_latest is None:
         return {"ok": False, "msg": "features_cache.csv 为空或缺少 date 列"}
-    latest = latest.date()
+    if data_latest is None:
+        return {"ok": False, "msg": "daily.csv 为空或缺少 date 列"}
+    feat_latest = feat_latest.date()
+    data_latest = data_latest.date()
 
-    recent = _recent_trading_day()
-    lag_days = (recent - latest).days
-    if latest < recent:
+    lag_days = (data_latest - feat_latest).days
+    if feat_latest < data_latest:
         return {
             "ok": False,
-            "msg": f"特征滞后 {lag_days} 天（特征最新 {latest}，最近交易日 {recent}）",
-            "latest": str(latest),
+            "msg": f"特征滞后数据 {lag_days} 天（特征最新 {feat_latest}，数据最新 {data_latest}）",
+            "latest": str(feat_latest),
+            "data_latest": str(data_latest),
             "lag_days": lag_days,
         }
     return {
         "ok": True,
-        "msg": f"特征已更新至 {latest}（最近交易日 {recent}）",
-        "latest": str(latest),
+        "msg": f"特征已跟上数据（特征/数据均 {feat_latest}）",
+        "latest": str(feat_latest),
+        "data_latest": str(data_latest),
         "lag_days": lag_days,
     }
 

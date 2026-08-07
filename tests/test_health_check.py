@@ -360,48 +360,50 @@ class TestCheckProviderHealth:
 
 
 class TestCheckFeaturesStaleness:
-    """特征滞后检测：features_cache 最新日期 vs 最近交易日（严格判定）"""
+    """特征滞后检测：features_cache 最新日期 vs daily.csv 最新日期（特征应跟上数据）"""
 
     @pytest.fixture(autouse=True)
     def _patch_env(self, tmp_path, monkeypatch):
-        """隔离真实 data/ 与真实日历：固定 DATA_DIR 与最近交易日"""
+        """隔离真实 data/：固定 DATA_DIR"""
         monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
-        monkeypatch.setattr(hc, "_recent_trading_day", lambda: date(2026, 8, 6))
 
-    def _write_features(self, tmp_path, dates):
+    def _write_csv(self, tmp_path, name, dates):
         df = pd.DataFrame({"date": pd.to_datetime(dates), "close": [1.0] * len(dates)})
-        df.to_csv(tmp_path / "features_cache.csv", index=False)
+        df.to_csv(tmp_path / name, index=False)
 
     def test_lagged_features_fail(self, tmp_path):
-        """特征末日 08-05 < 最近交易日 08-06 → 滞后 1 天，ok=False"""
-        self._write_features(tmp_path, ["2026-08-04", "2026-08-05"])
+        """特征 08-05 < 数据 08-06 → 滞后 1 天，ok=False"""
+        self._write_csv(tmp_path, "daily.csv", ["2026-08-05", "2026-08-06"])
+        self._write_csv(tmp_path, "features_cache.csv", ["2026-08-04", "2026-08-05"])
         r = hc.check_features_staleness()
         assert r["ok"] is False
-        assert "滞后 1 天" in r["msg"]
+        assert "滞后数据 1 天" in r["msg"]
         assert r["lag_days"] == 1
         assert r["latest"] == "2026-08-05"
 
-    def test_up_to_date_features_ok(self, tmp_path):
-        """特征末日 == 最近交易日 → ok=True"""
-        self._write_features(tmp_path, ["2026-08-05", "2026-08-06"])
+    def test_features_follow_data_ok(self, tmp_path):
+        """特征 08-06 == 数据 08-06（即使交易日未到）→ ok=True（不误报）"""
+        self._write_csv(tmp_path, "daily.csv", ["2026-08-05", "2026-08-06"])
+        self._write_csv(tmp_path, "features_cache.csv", ["2026-08-05", "2026-08-06"])
         r = hc.check_features_staleness()
         assert r["ok"] is True
         assert r["lag_days"] == 0
 
-    def test_ahead_features_ok(self, tmp_path):
-        """特征末日 > 最近交易日（数据超前等）→ 不算滞后，ok=True"""
-        self._write_features(tmp_path, ["2026-08-06", "2026-08-07"])
-        r = hc.check_features_staleness()
-        assert r["ok"] is True
-        assert r["lag_days"] == -1
-        assert "已更新至 2026-08-07" in r["msg"]
-
-    def test_missing_file_fails(self, tmp_path):
+    def test_missing_data_file_fails(self, tmp_path):
+        """daily.csv 不存在 → 无法对比，ok=False"""
+        self._write_csv(tmp_path, "features_cache.csv", ["2026-08-05", "2026-08-06"])
         r = hc.check_features_staleness()
         assert r["ok"] is False
-        assert "不存在" in r["msg"]
+        assert "daily.csv 不存在" in r["msg"]
 
-    def test_empty_file_fails(self, tmp_path):
+    def test_missing_features_file_fails(self, tmp_path):
+        self._write_csv(tmp_path, "daily.csv", ["2026-08-05", "2026-08-06"])
+        r = hc.check_features_staleness()
+        assert r["ok"] is False
+        assert "features_cache.csv 不存在" in r["msg"]
+
+    def test_empty_features_file_fails(self, tmp_path):
+        self._write_csv(tmp_path, "daily.csv", ["2026-08-05", "2026-08-06"])
         (tmp_path / "features_cache.csv").write_text(
             "date,close\n", encoding="utf-8")
         r = hc.check_features_staleness()
