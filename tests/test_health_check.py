@@ -93,55 +93,102 @@ class TestCheckTencent:
 
 
 class TestCheckAkShare:
-    def test_ok_with_df(self, monkeypatch):
-        df = pd.DataFrame({"date": [pd.Timestamp("2026-08-05")], "close": [1.0]})
+    """AkShare 源：被动观察（不主动请求，读 source_health.json）"""
 
-        def fake_fetch(self, symbol, start_date, end_date="20500101"):
-            return df
-
-        monkeypatch.setattr("data_provider.akshare.AkShareProvider.fetch_daily", fake_fetch)
+    def test_cooldown_observed(self, tmp_path, monkeypatch):
+        """冷却中 → ok=True + SKIP 标注"""
+        health = {"588000": {"akshare": {
+            "last_fetch_ts": 1, "last_max_date": None,
+            "consecutive_failures": 3, "cooldown_until": time.time() + 3600,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
         r = hc._check_akshare("588000")
         assert r["ok"] is True
-        assert "2026-08-05" in r["msg"]
+        assert "SKIP(cooldown)" in r["msg"]
 
-    def test_empty_df_fails(self, monkeypatch):
-        monkeypatch.setattr(
-            "data_provider.akshare.AkShareProvider.fetch_daily",
-            lambda self, symbol, start_date, end_date="20500101": None,
-        )
+    def test_recent_failures_observed(self, tmp_path, monkeypatch):
+        """冷却到期但最近失败 → ok=False + 观察标注"""
+        health = {"588000": {"akshare": {
+            "last_fetch_ts": 1, "last_max_date": "2026-08-05",
+            "consecutive_failures": 2, "cooldown_until": 0,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
         r = hc._check_akshare("588000")
         assert r["ok"] is False
-        assert "空数据" in r["msg"]
+        assert "最近失败 2 次" in r["msg"]
 
-    def test_exception_fails_as_source_fault(self, monkeypatch):
-        def fake_fetch(self, symbol, start_date, end_date="20500101"):
-            raise RuntimeError("IP 风控拒绝")
+    def test_ok_observed(self, tmp_path, monkeypatch):
+        """最近成功 → ok=True + 正常标注"""
+        health = {"588000": {"akshare": {
+            "last_fetch_ts": 1, "last_max_date": "2026-08-06",
+            "consecutive_failures": 0, "cooldown_until": 0,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
+        r = hc._check_akshare("588000")
+        assert r["ok"] is True
+        assert "正常（观察" in r["msg"]
 
-        monkeypatch.setattr("data_provider.akshare.AkShareProvider.fetch_daily", fake_fetch)
+    def test_unused_observed(self, tmp_path, monkeypatch):
+        """fetch_data 从未请求 → 未使用标注，ok=True"""
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps({}), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
+        r = hc._check_akshare("588000")
+        assert r["ok"] is True
+        assert "未使用" in r["msg"]
+
+    def test_missing_health_file_fails(self, tmp_path, monkeypatch):
+        """source_health.json 缺失 → ok=False（无法观察）"""
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", tmp_path / "nope.json")
         r = hc._check_akshare("588000")
         assert r["ok"] is False
-        assert "IP 风控拒绝" in r["msg"]  # 标注原因
+        assert "缺失/损坏" in r["msg"]
 
 
 class TestCheckEastMoney:
-    def test_ok_with_df(self, monkeypatch):
-        df = pd.DataFrame({"date": [pd.Timestamp("2026-08-05")], "close": [1.0]})
-        monkeypatch.setattr(
-            "data_provider.fallback.EastMoneyProvider.fetch_daily",
-            lambda self, symbol, start_date, end_date="20500101": df,
-        )
+    """EastMoney 源：被动观察（与 AkShare 同机制）"""
+
+    def test_cooldown_observed(self, tmp_path, monkeypatch):
+        health = {"588000": {"eastmoney": {
+            "last_fetch_ts": 1, "last_max_date": None,
+            "consecutive_failures": 3, "cooldown_until": time.time() + 3600,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
         r = hc._check_eastmoney("588000")
         assert r["ok"] is True
+        assert "SKIP(cooldown)" in r["msg"]
 
-    def test_exception_fails(self, monkeypatch):
-        monkeypatch.setattr(
-            "data_provider.fallback.EastMoneyProvider.fetch_daily",
-            lambda self, symbol, start_date, end_date="20500101": (_ for _ in ()).throw(
-                RuntimeError("eastmoney down")),
-        )
+    def test_recent_failures_observed(self, tmp_path, monkeypatch):
+        health = {"588000": {"eastmoney": {
+            "last_fetch_ts": 1, "last_max_date": "2026-08-05",
+            "consecutive_failures": 1, "cooldown_until": 0,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
         r = hc._check_eastmoney("588000")
         assert r["ok"] is False
-        assert "eastmoney down" in r["msg"]
+        assert "最近失败 1 次" in r["msg"]
+
+    def test_ok_observed(self, tmp_path, monkeypatch):
+        health = {"588000": {"eastmoney": {
+            "last_fetch_ts": 1, "last_max_date": "2026-08-06",
+            "consecutive_failures": 0, "cooldown_until": 0,
+        }}}
+        p = tmp_path / "source_health.json"
+        p.write_text(json.dumps(health), encoding="utf-8")
+        monkeypatch.setattr(hc, "SOURCE_HEALTH_PATH", p)
+        r = hc._check_eastmoney("588000")
+        assert r["ok"] is True
+        assert "正常（观察" in r["msg"]
 
 
 class TestCheckBaoStock:

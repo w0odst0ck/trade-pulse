@@ -38,6 +38,7 @@ from data_quality import scan_quality
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+SOURCE_HEALTH_PATH = SCRIPT_DIR / "source_health.json"
 DATA_DIR = PROJECT_ROOT / "data" / "588000"
 DOCS_DIR = PROJECT_ROOT / "docs"
 
@@ -52,9 +53,7 @@ TENCENT_HEADERS = {
     "Referer": "https://gu.qq.com/",
 }
 
-# 交易日历（简化：周末不算交易日）
-def is_weekend(d: date) -> bool:
-    return d.weekday() >= 5
+# 交易日历：统一走 trading_calendar（is_trading_day/prev_trading_day，识别节假日）
 
 
 def _latest_date(df: pd.DataFrame, path: Path):
@@ -84,15 +83,12 @@ def check_data_staleness() -> dict:
     if latest is None:
         return {"ok": False, "msg": "daily.csv 为空或缺少 date 列"}
     latest = latest.date()
-    today = date.today()
 
-    # 找最近一个交易日（跳过周末）
-    cursor = today
-    while is_weekend(cursor):
-        cursor = date.fromordinal(cursor.toordinal() - 1)
+    # 最近交易日（trading_calendar 识别节假日，与 features_staleness 口径一致）
+    cursor = _recent_trading_day()
 
     lag_days = (cursor - latest).days
-    # 周末允许 +2 天滞后（周五数据在周末检查时滞后 2 天正常）
+    # 周末/节假日允许 +2 天滞后（周五数据在周末检查时滞后 2 天正常）
     ok = lag_days <= 2
     return {
         "ok": ok,
@@ -175,9 +171,8 @@ def check_features() -> dict:
     latest = latest.date()
 
     # 滞后检查：与最近交易日对比，允许 2 天（特征跟着数据走）
-    cursor = date.today()
-    while is_weekend(cursor):
-        cursor = date.fromordinal(cursor.toordinal() - 1)
+    # 用 trading_calendar 识别节假日，与 features_staleness 口径一致
+    cursor = _recent_trading_day()
     lag_days = (cursor - latest).days
     ok = lag_days <= 2
     return {
@@ -306,35 +301,39 @@ def _check_tencent(symbol: str) -> dict:
 
 
 def _check_akshare(symbol: str) -> dict:
-    """AkShare 源（东财接口；当前 IP 风控中可能失败，属源故障而非代码问题）"""
-    _clear_proxy_env()
-    try:
-        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-        from data_provider.akshare import AkShareProvider
-        df = AkShareProvider().fetch_daily(symbol, _recent_start())
-        if df is not None and len(df) > 0:
-            latest = df["date"].max()
-            latest = latest.date() if hasattr(latest, "date") else latest
-            return {"ok": True, "msg": f"东财接口正常（最新 {latest}）"}
-        return {"ok": False, "msg": "东财接口返回空数据"}
-    except Exception as e:
-        return {"ok": False, "msg": f"源故障: {e}"}
+    """AkShare 源（东财系）：被动观察，不主动请求（东财 IP 风控重点）"""
+    return _observe_source(symbol, "akshare")
 
 
 def _check_eastmoney(symbol: str) -> dict:
-    """EastMoney 源（东财直连接口；与 AkShare 同受 IP 风控影响）"""
-    _clear_proxy_env()
+    """EastMoney 源（东财系）：被动观察，不主动请求（东财 IP 风控重点）"""
+    return _observe_source(symbol, "eastmoney")
+
+
+def _observe_source(symbol: str, src: str) -> dict:
+    """被动观察东财系源：读 source_health.json 展示最近状态，零主动请求
+
+    东财是 IP 风控重点：主动探活可能重新触发风控（退烧了又去撩病毒）。
+    状态完全由 fetch_data 实际使用结果驱动（fetch 成功/失败时写入）。
+    """
     try:
-        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-        from data_provider.fallback import EastMoneyProvider
-        df = EastMoneyProvider().fetch_daily(symbol, _recent_start())
-        if df is not None and len(df) > 0:
-            latest = df["date"].max()
-            latest = latest.date() if hasattr(latest, "date") else latest
-            return {"ok": True, "msg": f"东财接口正常（最新 {latest}）"}
-        return {"ok": False, "msg": "东财接口返回空数据"}
-    except Exception as e:
-        return {"ok": False, "msg": f"源故障: {e}"}
+        with open(SOURCE_HEALTH_PATH, encoding="utf-8") as f:
+            health = json.load(f)
+    except Exception:
+        return {"ok": False, "msg": "观察源不可用：source_health.json 缺失/损坏"}
+    entry = health.get(symbol, {}).get(src, {})
+    if not entry:
+        return {"ok": True, "msg": "未使用（fetch_data 尚未请求过此源）"}
+    now_ts = time.time()
+    cooldown_until = entry.get("cooldown_until", 0) or 0
+    if cooldown_until > now_ts:
+        remain_h = (cooldown_until - now_ts) / 3600
+        return {"ok": True, "msg": f"SKIP(cooldown) 冷却中（剩 {remain_h:.1f}h，预期状态）"}
+    fails = entry.get("consecutive_failures", 0)
+    last_date = entry.get("last_max_date") or "无"
+    if fails > 0:
+        return {"ok": False, "msg": f"最近失败 {fails} 次（观察中，最近数据 {last_date}）"}
+    return {"ok": True, "msg": f"正常（观察，最近数据 {last_date}）"}
 
 
 def _check_sina(symbol: str) -> dict:
