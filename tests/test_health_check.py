@@ -407,3 +407,45 @@ class TestCheckFeaturesStaleness:
         r = hc.check_features_staleness()
         assert r["ok"] is False
         assert "空" in r["msg"]
+
+
+class TestCheckState:
+    """check_state：损坏/结构异常的 state.json 应报 ok=False 而非崩溃"""
+
+    def test_missing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+        r = hc.check_state()
+        assert r["ok"] is False
+        assert "不存在" in r["msg"]
+
+    def test_broken_json(self, tmp_path, monkeypatch):
+        (tmp_path / "state.json").write_text("{broken", encoding="utf-8")
+        monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+        r = hc.check_state()
+        assert r["ok"] is False
+        assert "解析失败" in r["msg"]
+
+    def test_missing_state_field(self, tmp_path, monkeypatch):
+        (tmp_path / "state.json").write_text('{"foo": 1}', encoding="utf-8")
+        monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+        r = hc.check_state()
+        assert r["ok"] is False
+        assert "结构异常" in r["msg"]
+
+    def test_normal(self, tmp_path, monkeypatch):
+        (tmp_path / "state.json").write_text('{"state": "空仓"}', encoding="utf-8")
+        monkeypatch.setattr(hc, "DATA_DIR", tmp_path)
+        r = hc.check_state()
+        assert r["ok"] is True
+        assert "空仓" in r["msg"]
+
+
+class TestCheckGit:
+    """check_git：git 命令失败应报 ok=False（部署链路异常），而非静默 ok=True"""
+
+    def test_git_failure_reports_false(self, tmp_path, monkeypatch):
+        """非 git 目录 → ok=False + 明确报错"""
+        monkeypatch.setattr(hc, "PROJECT_ROOT", tmp_path)  # tmp_path 非 git 仓库
+        r = hc.check_git()
+        assert r["ok"] is False
+        assert "git 检查失败" in r["msg"]

@@ -218,8 +218,13 @@ def check_state() -> dict:
     path = DATA_DIR / "state.json"
     if not path.exists():
         return {"ok": False, "msg": "state.json 不存在"}
-    with open(path) as f:
-        s = json.load(f)
+    try:
+        with open(path) as f:
+            s = json.load(f)
+    except Exception as e:
+        return {"ok": False, "msg": f"state.json 解析失败: {e}"}
+    if not isinstance(s, dict) or "state" not in s:
+        return {"ok": False, "msg": "state.json 结构异常（缺 state 字段）"}
     return {"ok": True, "msg": f"状态机: {s.get('state', '?')}"}
 
 
@@ -230,6 +235,9 @@ def check_git() -> dict:
             ["git", "log", "-1", "--format=%cd", "--date=format:%Y-%m-%d %H:%M"],
             capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=10,
         )
+        if r.returncode != 0:
+            # git 命令本身失败（非仓库/权限等）：部署链路异常，如实报告
+            return {"ok": False, "msg": f"git 检查失败: {(r.stderr or r.stdout).strip()[:100]}"}
         last = r.stdout.strip()
         if not last:
             return {"ok": True, "msg": "无 git 记录"}
@@ -239,7 +247,7 @@ def check_git() -> dict:
         ok = hours <= 72
         return {"ok": ok, "msg": f"最近提交 {last}（{hours:.0f} 小时前）", "latest": last}
     except Exception as e:
-        return {"ok": True, "msg": f"git 检查跳过: {e}"}
+        return {"ok": False, "msg": f"git 检查异常: {e}"}
 
 
 # ── 五源健康度 ─────────────────────────────────────────
