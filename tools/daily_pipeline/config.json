@@ -2,6 +2,14 @@
  "symbol": "588000",
  "benchmark": "000688",
  "provider": "tencent",
+ "multi_source": true,
+ "sources": ["tencent", "sina", "baostock", "akshare", "eastmoney"],
+ "fast_sources": ["tencent", "sina"],
+ "source_cooldown": {
+  "max_failures": 3,
+  "cooldown_hours": 24,
+  "skip_window_min": 30
+ },
  "markets": {
   "588000": "sh",
   "000688": "sh"

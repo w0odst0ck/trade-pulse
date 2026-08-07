@@ -12,6 +12,8 @@ data/
 !/docs/assets/data.json
 !/docs/assets/common.js
 memory/
+# 数据源健康状态（运行时文件，节流/冷却时间戳，不入 git）
+tools/daily_pipeline/source_health.json
 项目目标.md
 项目计划.md
 信号规则系统设计.md
