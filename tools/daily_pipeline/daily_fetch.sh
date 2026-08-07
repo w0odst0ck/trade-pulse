@@ -17,13 +17,15 @@ if [ $RC -eq 0 ]; then
   exit 0
 fi
 
-# 区分失败类型：完整性校验失败 = 数据未发布（预期，16:30 兜底重试）
+# 区分失败类型：完整性校验失败 = 数据未发布（常态：腾讯盘后定型晚于 16:30）
+# → 静默 NO_REPLY（不打扰，09:15 早间补拉失败才是真正需要人工的场景）
 if echo "$OUT" | grep -q "数据完整性校验失败"; then
-  echo "⚠️ trade-pulse 今日数据源未发布（通常是所有源当日数据未就绪），16:30 补齐任务会自动重试，无需人工操作"
+  echo "NO_REPLY"
   exit 0
 fi
 
 # 其他错误（网络/解析/配置）：透传具体报错，需人工排查
+# （exit 0 推送文本，command 非零退出会吞 delivery）
 echo "⚠️ trade-pulse 日线拉取异常（exit=$RC），非「数据未发布」场景，建议人工检查："
 echo "$OUT" | tail -10
 exit 0
