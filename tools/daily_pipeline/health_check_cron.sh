@@ -75,6 +75,7 @@ for name, item in d.items():
         problems.append("❌ %s: %s" % (name, item.get("msg", "")))
 
 # 5. 输出
+# 注意：command 非零退出会吞 delivery → 异常也 exit 0（靠 announce 推送告警文本）
 if problems:
     print("⚠️ trade-pulse 健康检查异常")
     for p in problems:
@@ -82,7 +83,7 @@ if problems:
     # 附加冷却中的源备注（信息性，不算故障）
     if cooldown_sources:
         print("ℹ️ 冷却中（预期跳过）: %s" % ", ".join(sorted(cooldown_sources)))
-    sys.exit(2)
+    sys.exit(0)
 else:
     print("NO_REPLY")
     sys.exit(0)
