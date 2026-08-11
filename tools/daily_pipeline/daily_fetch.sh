@@ -15,6 +15,7 @@ RC=$?
 if [ $RC -eq 0 ]; then
   # 收盘数据到位 → 回填实时快照的 final 真值列（双线并行数据层；失败不阻塞）
   python3 tools/daily_pipeline/realtime_daily.py --backfill-final
+  bash tools/daily_pipeline/chain_mark.sh daily_fetch ok "日线到 $TODAY + final 回填"
   echo "✅ trade-pulse 日线已更新到 $TODAY"
   exit 0
 fi
@@ -22,6 +23,7 @@ fi
 # 区分失败类型：完整性校验失败 = 数据未发布（常态：腾讯盘后定型晚于 16:30）
 # → 静默 NO_REPLY（不打扰，09:15 早间补拉失败才是真正需要人工的场景）
 if echo "$OUT" | grep -q "数据完整性校验失败"; then
+  bash tools/daily_pipeline/chain_mark.sh daily_fetch skip "数据未发布(常态)"
   echo "NO_REPLY"
   exit 0
 fi

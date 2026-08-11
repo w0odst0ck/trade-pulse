@@ -64,5 +64,6 @@ if [ $GIT_RC -ne 0 ]; then
   exit $GIT_RC
 fi
 
+bash tools/daily_pipeline/chain_mark.sh daily_signal ok "预览+UI部署完成"
 echo "✅ trade-pulse 今日盘中预览已推送 + 面板已更新 https://w0odst0ck.github.io/trade-pulse/（部署约1-2分钟）"
 exit 0

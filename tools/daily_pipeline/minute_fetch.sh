@@ -22,8 +22,10 @@ LOG_FILE="$LOG_DIR/minute_$(date +%F).log"
 python3 tools/kronos/fetch_minute.py --all >>"$LOG_FILE" 2>&1
 RC=$?
 if [ $RC -eq 0 ]; then
+  bash tools/daily_pipeline/chain_mark.sh minute_fetch ok "分钟线增量完成"
   echo "✅ trade-pulse 分钟数据已增量更新（日志 $LOG_FILE）"
 else
+  bash tools/daily_pipeline/chain_mark.sh minute_fetch fail "exit=$RC"
   echo "⚠️ trade-pulse 分钟数据拉取失败（exit=$RC，日志 $LOG_FILE）"
   tail -5 "$LOG_FILE"
 fi

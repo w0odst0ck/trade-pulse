@@ -64,8 +64,8 @@ for name, item in d.items():
         continue
     if item.get("ok"):
         continue
-    # providers 子项：只报告非冷却中的源（防御：源条目必须是 dict）
-    if name == "providers":
+    # providers/realtime 子项：只报告非冷却中的源（防御：源条目必须是 dict）
+    if name in ("providers", "realtime"):
         for src, st in (item.get("sources") or {}).items():
             if not isinstance(st, dict):
                 continue
@@ -76,7 +76,19 @@ for name, item in d.items():
 
 # 5. 输出
 # 注意：command 非零退出会吞 delivery → 异常也 exit 0（靠 announce 推送告警文本）
+
+def _chain_mark(task, status, detail):
+    """写链路状态标记（供 17:00 日报汇总）"""
+    try:
+        subprocess.run(
+            ["bash", "tools/daily_pipeline/chain_mark.sh", task, status, str(detail)[:120]],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        pass
+
 if problems:
+    _chain_mark("health_check", "fail", problems[0])
     print("⚠️ trade-pulse 健康检查异常")
     for p in problems:
         print(p)
@@ -85,6 +97,7 @@ if problems:
         print("ℹ️ 冷却中（预期跳过）: %s" % ", ".join(sorted(cooldown_sources)))
     sys.exit(0)
 else:
+    _chain_mark("health_check", "ok", "全绿")
     print("NO_REPLY")
     sys.exit(0)
 PYEOF

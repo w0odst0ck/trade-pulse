@@ -65,6 +65,31 @@ def get_tenant_token() -> str:
     return token
 
 
+def _post_message(headers: dict, message: dict, retries: int = 2) -> dict:
+    """推送消息（带轻量重试：指数退避 2s/4s，网络抖动不丢推送）
+
+    重试策略：仅对网络层异常（连接失败/超时/5xx）重试；
+    业务错误（code != 0，如消息格式错误）不重试（重试无意义）。
+    """
+    url = f"{API_BASE}/im/v1/messages?receive_id_type=chat_id"
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            resp = requests.post(url, headers=headers, json=message, timeout=15)
+            data = resp.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"飞书推送失败: {data}")
+            return data
+        except (requests.exceptions.RequestException, OSError) as e:
+            # 网络层异常（连接失败/超时/DNS）→ 重试；业务错误（RuntimeError）不重试
+            last_exc = e
+            if attempt < retries:
+                time.sleep(2 * (attempt + 1))  # 2s, 4s
+        except RuntimeError:
+            raise  # 业务错误不重试
+    raise last_exc if last_exc else RuntimeError("飞书推送失败（未知错误）")
+
+
 def push_signal_card(result: dict, to_chat_id: str = CHAT_ID, preview: bool = False):
     """推送信号卡片到飞书群
 
@@ -157,15 +182,7 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID, preview: bool = Fa
         "content": json.dumps({"text": card_content}),
     }
 
-    resp = requests.post(
-        f"{API_BASE}/im/v1/messages?receive_id_type=chat_id",
-        headers=headers,
-        json=message,
-        timeout=15,
-    )
-    data = resp.json()
-    if data.get("code") != 0:
-        raise RuntimeError(f"飞书推送失败: {data}")
+    data = _post_message(headers, message)
 
     print(f"  [PUSH] 信号已推送到 study-vault 群 ✅")
     return data
@@ -209,15 +226,7 @@ def push_multi_panel(results: list, to_chat_id: str = CHAT_ID):
         "content": json.dumps({"text": card_text}),
     }
 
-    resp = requests.post(
-        f"{API_BASE}/im/v1/messages?receive_id_type=chat_id",
-        headers=headers,
-        json=message,
-        timeout=15,
-    )
-    data = resp.json()
-    if data.get("code") != 0:
-        raise RuntimeError(f"推送失败: {data}")
+    data = _post_message(headers, message)
 
     print(f"  [PUSH] 多标的扫描已推送 ✅")
     return data
@@ -235,13 +244,7 @@ def push_text(text: str, to_chat_id: str = CHAT_ID):
         "msg_type": "text",
         "content": json.dumps({"text": text}),
     }
-    resp = requests.post(
-        f"{API_BASE}/im/v1/messages?receive_id_type=chat_id",
-        headers=headers, json=message, timeout=15,
-    )
-    data = resp.json()
-    if data.get("code") != 0:
-        raise RuntimeError(f"飞书推送失败: {data}")
+    data = _post_message(headers, message)
     print(f"  [PUSH] 文本已推送 ✅")
     return data
 

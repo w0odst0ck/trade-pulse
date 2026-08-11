@@ -53,6 +53,18 @@ TENCENT_HEADERS = {
     "Referer": "https://gu.qq.com/",
 }
 
+# 实时行情接口（方案 B：qt.gtimg.cn / hq.sinajs.cn）
+REALTIME_TENCENT_URL = "http://qt.gtimg.cn/q={symbol}"
+REALTIME_SINA_URL = "https://hq.sinajs.cn/list={symbol}"
+REALTIME_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+}
+REALTIME_SINA_HEADERS = {**REALTIME_HEADERS, "Referer": "https://finance.sina.com.cn/"}
+
 # 交易日历：统一走 trading_calendar（is_trading_day/prev_trading_day，识别节假日）
 
 
@@ -336,6 +348,80 @@ def _observe_source(symbol: str, src: str) -> dict:
     return {"ok": True, "msg": f"正常（观察，最近数据 {last_date}）"}
 
 
+def _check_realtime_tencent(symbol: str) -> dict:
+    """实时源探活：qt.gtimg.cn 连通性 + 响应格式 sanity
+
+    注意：不依赖时段守卫——盘后/盘前接口返回昨收快照是正常状态，
+    探活只测「接口可达 + 返回可解析行情」；当日实时数据可得性由
+    realtime_quote.fetch_realtime_bar 的时段守卫负责（盘中才用）。
+    """
+    _clear_proxy_env()
+    try:
+        import requests
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from fetch_data import resolve_tencent_symbol
+        tsym = resolve_tencent_symbol(symbol)
+        url = REALTIME_TENCENT_URL.format(symbol=tsym)
+        resp = requests.get(url, headers=REALTIME_HEADERS, timeout=8)
+        resp.encoding = "gbk"
+        text = resp.text
+        import re as _re
+        m = _re.search(r'="(.*)"', text)
+        if not m:
+            return {"ok": False, "msg": "qt.gtimg.cn 响应无行情字段"}
+        parts = m.group(1).split("~")
+        if len(parts) < 36:
+            return {"ok": False, "msg": f"qt.gtimg.cn 字段数异常（{len(parts)}）"}
+        price = parts[3]
+        ts = parts[30]
+        return {"ok": True, "msg": f"qt.gtimg.cn 正常（price={price} ts={ts}）"}
+    except Exception as e:
+        return {"ok": False, "msg": f"qt.gtimg.cn 探活失败: {e}"}
+
+
+def _check_realtime_sina(symbol: str) -> dict:
+    """实时源探活：hq.sinajs.cn 连通性 + 响应格式 sanity"""
+    _clear_proxy_env()
+    try:
+        import requests
+        sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+        from fetch_data import resolve_tencent_symbol
+        tsym = resolve_tencent_symbol(symbol)
+        url = REALTIME_SINA_URL.format(symbol=tsym)
+        resp = requests.get(url, headers=REALTIME_SINA_HEADERS, timeout=8)
+        resp.encoding = "gbk"
+        text = resp.text
+        import re as _re
+        m = _re.search(r'="(.*)"', text)
+        if not m:
+            return {"ok": False, "msg": "hq.sinajs.cn 响应无行情字段"}
+        parts = m.group(1).split(",")
+        if len(parts) < 32:
+            return {"ok": False, "msg": f"hq.sinajs.cn 字段数异常（{len(parts)}）"}
+        return {"ok": True, "msg": f"hq.sinajs.cn 正常（name={parts[0]}）"}
+    except Exception as e:
+        return {"ok": False, "msg": f"hq.sinajs.cn 探活失败: {e}"}
+
+
+def check_realtime_health() -> dict:
+    """实时源健康度（方案 B 稳定性闭环）：qt.gtimg.cn + hq.sinajs.cn 双源探活
+
+    任一源挂 → 14:30 健康检查即预警（早于 14:50 决策时点发现），
+    双源全挂 → 今日实时信号将走兜底，用户提前知情。
+    """
+    symbol = _main_symbol()
+    sources = {
+        "realtime_tencent": _check_realtime_tencent(symbol),
+        "realtime_sina": _check_realtime_sina(symbol),
+    }
+    failed = [n for n, s in sources.items() if not s["ok"]]
+    if not failed:
+        msg = "实时源健康（qt.gtimg + hq.sinajs）"
+    else:
+        msg = f"{len(failed)} 个实时源异常: {', '.join(failed)}（14:50 信号将走兜底）"
+    return {"ok": not failed, "msg": msg, "sources": sources}
+
+
 def _check_sina(symbol: str) -> dict:
     """新浪源：SinaProvider 拉最近数据（与 fetch_data 同实现：带市场前缀）"""
     _clear_proxy_env()
@@ -450,6 +536,7 @@ def main():
         "quality": check_data_quality(),
         "git": check_git(),
         "providers": check_provider_health(),
+        "realtime": check_realtime_health(),
     }
 
     if args.json:
@@ -465,6 +552,11 @@ def main():
                 for sname, s in c.get("sources", {}).items():
                     smark = "✅" if s["ok"] else "❌"
                     print(f"      {smark} {sname:<9} {s['msg']}")
+            # 实时源同理：有 FAIL 才展开（全 OK 静默）
+            if name == "realtime" and not c["ok"]:
+                for sname, s in c.get("sources", {}).items():
+                    smark = "✅" if s["ok"] else "❌"
+                    print(f"      {smark} {sname:<15} {s['msg']}")
 
     # 退出码：有异常返回 1
     failed = [k for k, v in checks.items() if not v["ok"]]

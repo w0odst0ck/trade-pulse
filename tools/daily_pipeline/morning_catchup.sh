@@ -20,6 +20,7 @@ if [ ! -s "$CSV" ]; then
   if [ $RC -eq 0 ]; then
     NEW=$(tail -1 "$CSV" | cut -d, -f1)
     echo "✅ trade-pulse 早间补拉成功：日线已更新到 $NEW"
+    bash tools/daily_pipeline/chain_mark.sh morning_catchup ok "补拉到 $NEW"
   else
     echo "⚠️ trade-pulse 早间补拉仍失败：所有数据源连续两天未发布，建议人工检查"
   fi
@@ -31,6 +32,7 @@ LAST=$(tail -1 "$CSV" | cut -d, -f1)
 # 字符串比较 YYYY-MM-DD 即时间序；last >= yesterday 视为已到位
 if [[ "$LAST" == "$YESTERDAY" || "$LAST" > "$YESTERDAY" ]]; then
   echo "NO_REPLY"
+  bash tools/daily_pipeline/chain_mark.sh morning_catchup ok "数据已到位"
   exit 0
 fi
 
@@ -40,6 +42,7 @@ RC=$?
 if [ $RC -eq 0 ]; then
   NEW=$(tail -1 "$CSV" | cut -d, -f1)
   echo "✅ trade-pulse 早间补拉成功：日线已更新到 $NEW"
+  bash tools/daily_pipeline/chain_mark.sh morning_catchup ok "补拉到 $NEW"
 else
   echo "⚠️ trade-pulse 早间补拉仍失败：最新数据 $LAST，所有数据源未发布，建议人工检查"
 fi

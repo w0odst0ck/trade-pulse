@@ -31,6 +31,9 @@ LAST=$(tail -1 "$CSV" | cut -d, -f1)
 
 # 字符串比较 YYYY-MM-DD 即时间序；last >= today 视为已到位
 if [[ "$LAST" == "$TODAY" || "$LAST" > "$TODAY" ]]; then
+  bash tools/daily_pipeline/chain_mark.sh close_catchup ok "数据已到位"
+  # 14:50 confirm 失败兜底：收盘数据到位后检查是否需要补决策
+  bash tools/daily_pipeline/catchup_signal.sh
   echo "NO_REPLY"
   exit 0
 fi
@@ -42,6 +45,8 @@ RC=$?
 if [ $RC -eq 0 ]; then
   # 收盘数据到位 → 回填实时快照 final 真值列（兜底链路同样处理）
   python3 tools/daily_pipeline/realtime_daily.py --backfill-final
+  # 14:50 confirm 失败兜底：收盘补决策
+  bash tools/daily_pipeline/catchup_signal.sh
   NEW=$(tail -1 "$CSV" | cut -d, -f1)
   echo "✅ trade-pulse 补齐成功：日线已更新到 $NEW"
   exit 0
@@ -49,6 +54,7 @@ fi
 
 # 区分：完整性校验失败 = 未发布（常态，静默）；其他错误 = 真实故障（推送）
 if echo "$OUT" | grep -q "数据完整性校验失败"; then
+  bash tools/daily_pipeline/chain_mark.sh close_catchup skip "数据未发布(常态)"
   echo "NO_REPLY"
   exit 0
 fi
