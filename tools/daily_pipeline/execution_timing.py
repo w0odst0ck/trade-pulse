@@ -172,16 +172,20 @@ def compute_feature_frame(df_sym: pd.DataFrame, df_bench: pd.DataFrame,
 
 
 def build_intraday_feature_series(daily_df: pd.DataFrame, min15_df: pd.DataFrame,
-                                  bench_df: pd.DataFrame, config: dict) -> pd.DataFrame:
-    """盘中特征序列：daily 全历史，min15 覆盖日的当日 bar 替换为「截至 14:30 聚合 bar」，
+                                  bench_df: pd.DataFrame, config: dict,
+                                  cutoff_hhmm: int = INTRADAY_CUTOFF_HHMM) -> pd.DataFrame:
+    """盘中特征序列：daily 全历史，min15 覆盖日的当日 bar 替换为「截至 cutoff 聚合 bar」，
     再走生产因子函数。
 
     语义：2026-01-05 之前的行 = 收盘口径（仅作历史窗口）；之后的行 = 盘中口径（实盘 T 日
     14:25 决策时可见的信息）。benchmark 无 min15 数据，保持收盘口径——relative_strength
     列因此含当日 benchmark 收盘信息，但该因子权重为 0（config.weights 无此项），
     不影响 total_score。
+
+    cutoff_hhmm 决定盘中可见性边界（14:25 预览=1430 排除 14:30 bar；
+    14:50 尾盘确认=1450 排除 14:45 bar）。
     """
-    intraday = aggregate_intraday_bars(min15_df)
+    intraday = aggregate_intraday_bars(min15_df, cutoff_hhmm=cutoff_hhmm)
     if len(intraday) == 0:
         raise ValueError("min15 数据为空，无法构造盘中特征序列")
     covered = set(pd.to_datetime(intraday['date']))

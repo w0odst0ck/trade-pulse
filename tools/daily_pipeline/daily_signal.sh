@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# trade-pulse 每日信号推送 + UI 部署（14:25）— 纯 shell 实现，零 LLM 调用
-# 行为：信号推送 → 纸面盘更新 → UI 构建 → git 提交部署；失败输出告警 + 透传退出码
+# trade-pulse 每日信号盘中预览 + 纸面盘 + UI 部署（14:25）— 纯 shell 实现，零 LLM 调用
+# 行为（方案 B）：实时模式预览信号推送（不写 state）→ 纸面盘更新 → UI 构建 → git 提交部署；
+# 失败输出告警 + 透传退出码
+# 注：14:25 为「盘中预览」（🟡，不写 state）；14:50 由 daily_confirm.sh 做「尾盘确认」（🟢，写 state）
 set -uo pipefail
 
 export http_proxy=http://127.0.0.1:7890
@@ -20,18 +22,18 @@ export FEISHU_APP_SECRET
 
 TODAY=$(date +%F)
 
-# 1. 信号推送（内部 fetch_data 多源，失败自动降级）
-python3 tools/daily_pipeline/daily_panel.py --push
+# 1. 盘中预览推送（实时模式：拉实时 bar 拼今日特征，不写 state；失败自动回退收盘口径）
+python3 tools/daily_pipeline/daily_panel.py --realtime --push
 RC=$?
 if [ $RC -ne 0 ]; then
-  echo "⚠️ trade-pulse 每日信号推送失败（exit=$RC）"
+  echo "⚠️ trade-pulse 盘中预览推送失败（exit=$RC）"
   exit $RC
 fi
 
-# 1.5 接近翻多预警（0.05 <= 综合分 < 0.1 时推飞书文本；其余静默）
+# 1.5 接近翻多预警（实时口径，0.05 <= 综合分 < 0.1 时推飞书文本；其余静默）
 bash tools/daily_pipeline/signal_watch.sh
 
-# 2. 纸面盘增量（与回测同口径，无状态文件自动全量）
+# 2. 纸面盘增量（与回测同口径，无状态文件自动全量；收盘口径特征，不受实时影响）
 python3 tools/daily_pipeline/paper_trade.py --update
 PAPER_RC=$?
 if [ $PAPER_RC -ne 0 ]; then
@@ -47,18 +49,13 @@ if [ $UI_RC -ne 0 ]; then
   exit $UI_RC
 fi
 
-# 4. git 提交部署（空 diff 不算失败）
-git add docs/
-if git diff --cached --quiet -- docs/; then
-  echo "✅ trade-pulse 今日信号已推送（UI 无变化，跳过部署）"
-  exit 0
-fi
-git commit -m "ui: update dashboard $TODAY" && git push origin main
+# 4. UI 部署（公共脚本：add/commit/fetch/rebase/push + 并发安全；失败时跳过部署）
+bash tools/daily_pipeline/deploy_ui.sh "ui: update dashboard $TODAY"
 GIT_RC=$?
 if [ $GIT_RC -ne 0 ]; then
-  echo "⚠️ trade-pulse git 部署失败（exit=$GIT_RC），UI 已构建未推送"
+  echo "⚠️ trade-pulse UI 部署失败（exit=$GIT_RC），信号推送已完成"
   exit $GIT_RC
 fi
 
-echo "✅ trade-pulse 今日信号已推送 + 面板已更新 https://w0odst0ck.github.io/trade-pulse/（部署约1-2分钟）"
+echo "✅ trade-pulse 今日盘中预览已推送 + 面板已更新 https://w0odst0ck.github.io/trade-pulse/（部署约1-2分钟）"
 exit 0

@@ -296,12 +296,40 @@ def compute_total_score(features: pd.DataFrame, config: dict) -> pd.Series:
     return weighted(w)
 
 
+def _compute_factor_df(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """纯因子计算（不读写缓存）：对完整 df_sym/df_bench 算全部因子 + total_score。
+
+    供 compute_all_features（增量/全量）与 compute_realtime_features（盘中实时）复用，
+    保证两路径因子口径完全一致。
+    """
+    windows = {
+        'momentum': config.get('momentum_window', 5),
+        'trend': config.get('trend_window', 20),
+        'atr': config.get('atr_window', 14),
+        'rsrs': config.get('rsrs_window', 18),
+        'rel_strength': config.get('rel_strength_window', 20),
+    }
+
+    features = df_sym[['date', 'close', 'volume']].copy()
+    features['momentum'] = momentum_score(df_sym, windows['momentum'])
+    features['trend'] = trend_score(df_sym, windows['trend'])
+    features['volume_price'] = volume_price_score(df_sym)
+    features['rsrs'] = rsrs_score(df_sym, windows['rsrs'])
+    features['relative_strength'] = relative_strength_score(df_sym, df_bench, windows['rel_strength'])
+    features['weekly_modifier'] = weekly_modifier(df_sym, config)
+    features['ma60_slope'] = ma60_slope(df_sym)
+    features['total_score'] = compute_total_score(features, config)
+    return features
+
+
 def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: dict,
-                         force: bool = False, symbol: str = None) -> pd.DataFrame:
+                         force: bool = False, symbol: str = None,
+                         persist: bool = True) -> pd.DataFrame:
     """计算全量历史特征
 
     symbol 为空时取 config['symbol']（默认标的）；传入时按 data/{symbol} 读写缓存，
     因子计算本身与标的无关（相对强度用传入的 df_bench，默认基准 config['benchmark']）。
+    persist=False 时不写 features_cache（盘中实时路径用，避免污染收盘口径缓存）。
     """
     symbol = symbol or config['symbol']
 
@@ -326,26 +354,8 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
         compute_df = df_sym
         cached = pd.DataFrame()
 
-    windows = {
-        'momentum': config.get('momentum_window', 5),
-        'trend': config.get('trend_window', 20),
-        'atr': config.get('atr_window', 14),
-        'rsrs': config.get('rsrs_window', 18),
-        'rel_strength': config.get('rel_strength_window', 20),
-    }
-
-    # 算因子
-    features = compute_df[['date', 'close', 'volume']].copy()
-    features['momentum'] = momentum_score(compute_df, windows['momentum'])
-    features['trend'] = trend_score(compute_df, windows['trend'])
-    features['volume_price'] = volume_price_score(compute_df)
-    features['rsrs'] = rsrs_score(compute_df, windows['rsrs'])
-    features['relative_strength'] = relative_strength_score(compute_df, df_bench, windows['rel_strength'])
-    features['weekly_modifier'] = weekly_modifier(compute_df, config)
-    features['ma60_slope'] = ma60_slope(compute_df)
-
-    # 加权总分（从 config 动态读取因子，不硬编码；支持市场状态自适应权重）
-    features['total_score'] = compute_total_score(features, config)
+    # 算因子（纯计算，与实时路径共用同一实现）
+    features = _compute_factor_df(compute_df, df_bench, config)
 
     # 合并缓存
     if not force and len(cached) > 0:
@@ -357,9 +367,84 @@ def compute_all_features(df_sym: pd.DataFrame, df_bench: pd.DataFrame, config: d
     else:
         combined = features
 
-    save_features_cache(combined, symbol)
-    print(f"  [OK] 特征缓存: {len(combined)} 条 ({combined['date'].min().date()} ~ {combined['date'].max().date()})")
+    if persist:
+        save_features_cache(combined, symbol)
+        print(f"  [OK] 特征缓存: {len(combined)} 条 ({combined['date'].min().date()} ~ {combined['date'].max().date()})")
+    else:
+        print(f"  [OK] 特征计算完成（不落盘）: {len(combined)} 条")
     return combined
+
+
+def append_realtime_bar(df: pd.DataFrame, bar: dict) -> pd.DataFrame:
+    """把盘中实时 bar 追加到日线 df 末尾（内存态，不落盘）
+
+    bar 字段：date/open/high/low/close/volume/amount（与 daily.csv 列对齐）。
+    若 bar.date 已存在于 df（同日重复调用），替换该行（实时刷新语义）；
+    否则追加为最后一行。返回新 df（不改原对象）。
+    """
+    out = df.copy()
+    cols = ['date', 'open', 'close', 'high', 'low', 'volume', 'amount',
+            'amplitude', 'change_pct', 'change', 'turnover', 'symbol']
+    # 缺失价格/量字段置 NaN 而非 0：0 价会被因子函数当成真实数据产生看似合理的错误
+    # total_score（0 价 bar 驱动实盘买卖 = 灾难）；NaN 则被因子函数自然排除/填充
+    row = {
+        'date': pd.Timestamp(bar['date']),
+        'open': bar.get('open', float('nan')),
+        'close': bar.get('close', float('nan')),
+        'high': bar.get('high', float('nan')),
+        'low': bar.get('low', float('nan')),
+        'volume': bar.get('volume', float('nan')),
+        'amount': bar.get('amount', float('nan')),
+    }
+    # symbol 列单独处理（须先于 fill 循环：否则 fill 先加了 symbol 列，
+    # 后续判断恒 True 会把 symbol 填成 NaN）
+    if 'symbol' not in out.columns:
+        out['symbol'] = ''
+    row['symbol'] = out['symbol'].iloc[0] if len(out) else ''
+    for c in cols:
+        if c not in out.columns:
+            out[c] = float('nan') if c != 'date' else pd.NaT
+
+    existing = out[out['date'] == row['date']]
+    if len(existing) > 0:
+        idx = existing.index[0]
+        for c in cols:
+            if c in row and c != 'date':
+                out.at[idx, c] = row[c]
+        return out.sort_values('date').reset_index(drop=True)
+    out = pd.concat([out, pd.DataFrame([row])], ignore_index=True)
+    return out.sort_values('date').reset_index(drop=True)
+
+
+def compute_realtime_features(symbol: str, bench_symbol: str, bar_sym: dict,
+                              bar_bench: dict, config: dict) -> pd.DataFrame:
+    """盘中实时特征：历史日线 + 实时 bar 拼接后全量重算（不落盘）
+
+    返回完整特征 df（含实时行），由调用方取最后一行做决策。
+    注意：
+      - 不写 features_cache（收盘口径缓存保持纯净，次日增量重算时自动覆盖实时行）
+      - 因子口径与 compute_all_features 完全一致（共用 _compute_factor_df）
+      - 实时 volume 为当日累计量（腾讯=手，与 daily.csv 一致），
+        volume_price 因子会用「半天累计量 vs 5 日均量」——盘中 14:25 量能天然偏低，
+        属预期偏差（execution_timing 实验证明 total_score 相关 0.98，影响可控）
+    """
+    df_sym = load_data(symbol)
+    df_bench = load_data(bench_symbol)
+    if bar_sym:
+        df_sym = append_realtime_bar(df_sym, bar_sym)
+    else:
+        # 防御：正常路径由 run_realtime 保证 bar_sym 非 None（None 直接兜底不进来），
+        # 但本函数应可独立调用——缺失时显式告警而非静默用纯历史数据
+        print("  [WARN] 标的实时 bar 缺失，特征仅含历史收盘数据（非实时口径）")
+    if bar_bench:
+        df_bench = append_realtime_bar(df_bench, bar_bench)
+    else:
+        # 基准实时 bar 缺失：relative_strength 因子（展示用，权重 0）将因 inner join
+        # 丢弃当日行 → 该因子为 NaN。不影响 total_score（config.weights 无此项），
+        # 但显式告警避免静默降级被误解为完整信号。
+        print("  [WARN] 基准(000688)实时 bar 缺失，relative_strength 因子当日为 NaN"
+              "（该因子权重 0，不影响 total_score）")
+    return _compute_factor_df(df_sym, df_bench, config)
 
 
 def get_latest_features(symbol: str) -> dict:

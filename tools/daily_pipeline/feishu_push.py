@@ -65,8 +65,12 @@ def get_tenant_token() -> str:
     return token
 
 
-def push_signal_card(result: dict, to_chat_id: str = CHAT_ID):
-    """推送信号卡片到飞书群"""
+def push_signal_card(result: dict, to_chat_id: str = CHAT_ID, preview: bool = False):
+    """推送信号卡片到飞书群
+
+    preview=True 时推送「🟡 盘中预览」样式（14:25 实时预览，不写 state）；
+    preview=False 为正式信号（14:50 尾盘确认 或 收盘口径）。
+    """
     token = get_tenant_token()
     headers = {
         "Authorization": f"Bearer {token}",
@@ -75,6 +79,8 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID):
 
     # 构建富文本卡片
     date_str = str(result.get('date', ''))[:10]
+    signal_mode = result.get('signal_mode', 'close')
+    signal_data_date = str(result.get('signal_data_date', ''))[:10]
     decision = result.get('decision', '?')
     action = result.get('action', '?')
     position = result.get('position', '?')
@@ -119,14 +125,24 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID):
         '观望': '👀',
     }.get(decision, '📊')
 
+    # 信号时点标注：盘中实时预览 / 尾盘确认 / 收盘口径
+    if preview:
+        timing_label = '🟡 盘中预览（实时数据）'
+    elif signal_mode == 'realtime':
+        timing_label = '🟢 尾盘确认（实时数据）'
+    else:
+        timing_label = '📊 收盘信号（昨日收盘数据）'
+    data_note = f"信号数据日：{signal_data_date}" if signal_data_date else f"信号日期：{date_str}"
+
     card_content = (
-        f"📊 trade-pulse | {date_str}\n"
+        f"{timing_label}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"标的：588000 科创50ETF\n"
         f"决策：{decision_emoji} {decision}\n"
         f"操作：{action}\n"
         f"仓位建议：{position}\n"
         f"综合分：{score:+.2f}（周线调节 {weekly_mod:+.2f}）\n"
+        f"{data_note}\n"
         f"\n"
         f"因子状态：\n"
         f"{factor_text}\n"

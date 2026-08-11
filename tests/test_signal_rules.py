@@ -222,7 +222,13 @@ class TestConfigStateIO(unittest.TestCase):
                 sr.save_state(saved)
                 self.assertTrue(state_path.exists())
                 loaded = sr.load_state()
-            self.assertEqual(loaded, saved)
+            # load_state 会用默认值补齐新字段（signal_mode/signal_data_date），
+            # 保证旧 state.json 无缝升级；已保存字段原样保留
+            self.assertEqual(loaded['state'], '持仓')
+            self.assertEqual(loaded['waiting_days'], 1)
+            self.assertEqual(loaded['last_decision_date'], '2026-01-05')
+            self.assertEqual(loaded['signal_mode'], 'close')
+            self.assertIsNone(loaded['signal_data_date'])
 
     def test_load_state_defaults_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -231,6 +237,44 @@ class TestConfigStateIO(unittest.TestCase):
             self.assertEqual(loaded['state'], '空仓')
             self.assertEqual(loaded['waiting_days'], 0)
             self.assertIsNone(loaded['last_decision_date'])
+            self.assertEqual(loaded['signal_mode'], 'close')
+            self.assertIsNone(loaded['signal_data_date'])
+
+    def test_decide_signal_mode_fields(self):
+        """decide 输出应带 signal_mode/signal_data_date（方案 B 字段）"""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'state.json'
+            with mock.patch.object(sr, 'STATE_PATH', state_path):
+                feat = {
+                    'date': '2026-01-05',
+                    'total_score': 0.3, 'weekly_modifier': 0.0,
+                    'momentum': 0.5, 'trend': 0.4, 'volume_price': 0.2,
+                    'rsrs': 0.1, 'relative_strength': 0.0,
+                }
+                result = sr.decide(feat, None, persist=False, signal_mode='realtime',
+                                   signal_data_date='2026-01-05')
+                self.assertEqual(result['signal_mode'], 'realtime')
+                self.assertEqual(result['signal_data_date'], '2026-01-05')
+                self.assertEqual(result['_new_state']['signal_mode'], 'realtime')
+                self.assertEqual(result['_new_state']['signal_data_date'], '2026-01-05')
+                self.assertEqual(result['_new_state']['state'], '持仓')
+
+    def test_decide_persist_writes_signal_mode(self):
+        """confirm 模式 persist=True 时应把 signal_mode 写入 state.json"""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / 'state.json'
+            with mock.patch.object(sr, 'STATE_PATH', state_path):
+                feat = {
+                    'date': '2026-01-05',
+                    'total_score': -0.2, 'weekly_modifier': 0.0,
+                    'momentum': -0.1, 'trend': -0.2, 'volume_price': 0.0,
+                    'rsrs': -0.3, 'relative_strength': 0.0,
+                }
+                sr.decide(feat, None, persist=True, signal_mode='realtime',
+                          signal_data_date='2026-01-05')
+                loaded = sr.load_state()
+                self.assertEqual(loaded['signal_mode'], 'realtime')
+                self.assertEqual(loaded['signal_data_date'], '2026-01-05')
 
 
 if __name__ == '__main__':

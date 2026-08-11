@@ -93,6 +93,39 @@ def build_data() -> dict:
 
     latest = features[-1] if features else {}
     sig_state = state.get("state", "空仓")
+    sig_mode = state.get("signal_mode", "close")
+    sig_data_date = state.get("signal_data_date")
+
+    # 实时确认信号（14:50 confirm 写入）：优先作为 signals 数据源——
+    # 此时 features_cache 还是昨日收盘，但 state 已是今日实时口径，
+    # 必须用实时 score/factors 展示，否则 dashboard 状态与分数不匹配
+    rt_signal = {}
+    rt_path = DATA_DIR / "realtime_signal.json"
+    if rt_path.exists():
+        try:
+            with open(rt_path, encoding="utf-8") as f:
+                rt_signal = json.load(f)
+        except Exception as e:
+            print(f"  [WARN] 读取 realtime_signal.json 失败: {e}")
+
+    if rt_signal.get("signal_mode") == "realtime":
+        sig_state = rt_signal.get("state", sig_state)
+        sig_mode = "realtime"
+        sig_data_date = rt_signal.get("signal_data_date", sig_data_date)
+        rt_score = rt_signal.get("total_score")
+        rt_factors = rt_signal.get("factors") or {}
+    else:
+        rt_score, rt_factors = None, {}
+
+    # 实时确认（14:50）后 state 是当日盘中口径，features 还是昨日收盘 →
+    # 展示时注明信号来源，避免误读为收盘信号
+    mode_label = "盘中实时" if sig_mode == "realtime" else "收盘"
+    sig_date = str(sig_data_date or latest.get("date", ""))[:10]
+    display_score = rt_score if rt_score is not None else latest.get("total_score", 0)
+    display_factors = {
+        k: rt_factors.get(k, latest.get(k, 0))
+        for k in ["momentum", "trend", "volume_price", "rsrs"]
+    }
 
     data = {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -100,10 +133,12 @@ def build_data() -> dict:
         "signals": {
             "588000": {
                 "state": sig_state,
-                "score": round(float(latest.get("total_score", 0)), 4),
-                "date": str(latest.get("date", ""))[:10],
+                "score": round(float(display_score), 4),
+                "date": sig_date,
+                "signal_mode": sig_mode,
+                "signal_mode_label": mode_label,
                 "factors": {
-                    k: round(float(latest.get(k, 0)), 3)
+                    k: round(float(display_factors.get(k, 0)), 3)
                     for k in ["momentum", "trend", "volume_price", "rsrs"]
                 },
                 "factor_names": ["动量", "趋势", "量价", "RSRS"],

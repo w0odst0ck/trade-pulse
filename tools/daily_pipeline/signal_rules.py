@@ -34,7 +34,9 @@ def load_state() -> dict:
     default = {
         'state': '空仓',         # 持仓 / 观望 / 空仓
         'waiting_days': 0,       # 确认计数
-        'last_decision_date': None,  # 上次决策日期
+        'last_decision_date': None,  # 上次决策日期（决策发生日）
+        'signal_mode': 'close',  # close=收盘口径 / realtime=盘中实时
+        'signal_data_date': None,  # 信号数据日期（实时模式下=当日盘中）
     }
     if STATE_PATH.exists():
         with open(STATE_PATH) as f:
@@ -100,7 +102,8 @@ def get_adaptive_thresholds(config: dict, latest_features: dict) -> dict:
         }
 
 
-def decide(latest_features: dict, _historical_features=None, state_override=None, persist=True, config_override=None) -> dict:
+def decide(latest_features: dict, _historical_features=None, state_override=None, persist=True, config_override=None,
+           signal_mode: str = 'close', signal_data_date: str = None) -> dict:
     """状态机决策主逻辑
 
     Parameters
@@ -108,9 +111,14 @@ def decide(latest_features: dict, _historical_features=None, state_override=None
     state_override : dict or None
         传入状态字典时回测模式，不读文件。None=正常模式读 state.json
     persist : bool
-        是否将状态持久化到文件。回测模式=False
+        是否将状态持久化到文件。回测模式=False；盘中 preview=False，confirm=True
     config_override : dict or None
         传入配置字典时使用该配置，否则读 config.json
+    signal_mode : str
+        'close'=收盘口径（默认，每日 14:25 收盘信号）/ 'realtime'=盘中实时口径
+    signal_data_date : str or None
+        信号数据日期（YYYY-MM-DD）。实时模式下=当日盘中 bar 日期；
+        None 时取 latest_features['date']
     """
     config = config_override if config_override is not None else load_config()
     state = load_state() if state_override is None else state_override
@@ -229,19 +237,23 @@ def decide(latest_features: dict, _historical_features=None, state_override=None
         'state': new_state,
         'waiting_days': waiting_days,
         'last_decision_date': today_str,
+        'signal_mode': signal_mode,
+        'signal_data_date': signal_data_date or today_str,
     }
     if persist:
         save_state(state_update)
 
     result = _build_result(new_state, total_score, action, explanation,
-                           latest_features, config, position)
+                           latest_features, config, position, signal_mode=signal_mode,
+                           signal_data_date=state_update['signal_data_date'])
     if not persist:
         result['_new_state'] = state_update
     return result
 
 
 def _build_result(state: str, score: float, action: str, explanation: str,
-                  features: dict, config: dict, position: float = 0) -> dict:
+                  features: dict, config: dict, position: float = 0,
+                  signal_mode: str = 'close', signal_data_date: str = None) -> dict:
     return {
         'date': features.get('date', str(date.today())),
         'decision': state,
@@ -250,6 +262,8 @@ def _build_result(state: str, score: float, action: str, explanation: str,
         'explanation': explanation,
         'position': f"{position * 100:.0f}%",
         'weekly_modifier': features.get('weekly_modifier', 0.0),
+        'signal_mode': signal_mode,
+        'signal_data_date': signal_data_date or str(features.get('date', ''))[:10],
         'factors': {
             'momentum': features.get('momentum', 0),
             'trend': features.get('trend', 0),

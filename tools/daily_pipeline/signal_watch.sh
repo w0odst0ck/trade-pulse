@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# 信号接近翻多预警（14:25 信号任务内调用）— 纯 shell，零 LLM
-# 行为：解析 daily_panel --json 的综合分，若 0.05 <= score < 0.1 且空仓/等待
+# 信号接近翻多预警（14:25 盘中预览任务内调用）— 纯 shell，零 LLM
+# 行为：解析 daily_panel --realtime --json 的综合分，若 0.05 <= score < 0.1 且空仓/等待
 #       → 推飞书文本预警「接近翻多」；其余情况静默（无输出）
+# 方案 B 后基于盘中实时信号（与 14:25 预览同口径）
 set -uo pipefail
 
 PROJ=/home/l/.openclaw/workspace/projects/trade-pulse
 cd "$PROJ" || exit 1
 
-OUT=$(python3 tools/daily_pipeline/daily_panel.py --skip-fetch --json 2>/dev/null)
+OUT=$(python3 tools/daily_pipeline/daily_panel.py --realtime --json 2>/dev/null)
 RC=$?
 [ $RC -ne 0 ] && exit 0  # 面板失败不预警（主任务会报错）
 
-# 提取综合分 / 决策：取第一个 { 到末尾完整解析（--json 是多行 indent 输出）
+# 提取综合分 / 决策 / 信号模式：取第一个 { 到末尾完整解析（--json 是多行 indent 输出）
 # 防御：若噪音行含 { 导致解析失败，尝试后续 { 位置直到成功
 PARSE=$(echo "$OUT" | python3 -c "
 import sys, json
@@ -25,10 +26,18 @@ for i, ch in enumerate(text):
         continue
     print(d.get('total_score', 'nan'))
     print(d.get('decision', ''))
+    print(d.get('signal_mode', ''))
     break
 " 2>/dev/null)
 SCORE=$(echo "$PARSE" | sed -n '1p')
 DECISION=$(echo "$PARSE" | sed -n '2p')
+SIGNAL_MODE=$(echo "$PARSE" | sed -n '3p')
+
+# 仅实时口径才预警：实时源失败走兜底时 signal_mode='close'（昨日收盘数据），
+# 绝不能把过期数据误报成当日盘中实时信号
+if [ "$SIGNAL_MODE" != "realtime" ]; then
+  exit 0
+fi
 
 # 数值比较：score >= 0.05 且 < 0.1，且处于空仓/等待（持仓时不需要翻多预警）
 WARN=$(python3 - "$SCORE" "$DECISION" <<'PYEOF'
