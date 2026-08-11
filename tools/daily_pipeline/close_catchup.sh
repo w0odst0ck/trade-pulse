@@ -40,6 +40,8 @@ echo "⚠️ trade-pulse 收盘补齐：今日数据未到位（最新 $LAST）�
 OUT=$(python3 tools/daily_pipeline/fetch_data.py --require-date "$TODAY" 2>&1)
 RC=$?
 if [ $RC -eq 0 ]; then
+  # 收盘数据到位 → 回填实时快照 final 真值列（兜底链路同样处理）
+  python3 tools/daily_pipeline/realtime_daily.py --backfill-final
   NEW=$(tail -1 "$CSV" | cut -d, -f1)
   echo "✅ trade-pulse 补齐成功：日线已更新到 $NEW"
   exit 0

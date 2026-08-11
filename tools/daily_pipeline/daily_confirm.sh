@@ -31,6 +31,13 @@ if [ $RC -ne 0 ]; then
   exit $RC
 fi
 
+# 1.2 14:50 实时快照积累（双线并行数据层：close_1450 列；失败不影响主流程）
+python3 tools/daily_pipeline/realtime_daily.py --snapshot-1450
+SNAP_RC=$?
+if [ $SNAP_RC -ne 0 ]; then
+  echo "⚠️ trade-pulse 14:50 快照写入失败（exit=$SNAP_RC，不阻塞主流程）"
+fi
+
 # 2. UI 构建部署（dashboard 反映当日实时确认信号；公共部署脚本含并发安全）
 python3 tools/ui/build_ui.py
 UI_RC=$?

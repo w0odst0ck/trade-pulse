@@ -13,6 +13,8 @@ TODAY=$(date +%F)
 OUT=$(python3 tools/daily_pipeline/fetch_data.py --require-date "$TODAY" 2>&1)
 RC=$?
 if [ $RC -eq 0 ]; then
+  # 收盘数据到位 → 回填实时快照的 final 真值列（双线并行数据层；失败不阻塞）
+  python3 tools/daily_pipeline/realtime_daily.py --backfill-final
   echo "✅ trade-pulse 日线已更新到 $TODAY"
   exit 0
 fi

@@ -30,6 +30,13 @@ if [ $RC -ne 0 ]; then
   exit $RC
 fi
 
+# 1.2 14:25 实时快照积累（双线并行数据层：close_1425 列；失败不影响主流程）
+python3 tools/daily_pipeline/realtime_daily.py --snapshot-1425
+SNAP_RC=$?
+if [ $SNAP_RC -ne 0 ]; then
+  echo "⚠️ trade-pulse 14:25 快照写入失败（exit=$SNAP_RC，不阻塞主流程）"
+fi
+
 # 1.5 接近翻多预警（实时口径，0.05 <= 综合分 < 0.1 时推飞书文本；其余静默）
 bash tools/daily_pipeline/signal_watch.sh
 
