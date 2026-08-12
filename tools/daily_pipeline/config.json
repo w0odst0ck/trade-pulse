@@ -97,5 +97,12 @@
     "stale": 0.6,
     "broken": 0.3,
     "blind": 0.0
+  },
+  "position_map": {
+    "type": "linear",
+    "base": 0.3,
+    "slope": 0.4,
+    "cap": 0.7,
+    "cap_score": 0.7
   }
 }
