@@ -34,9 +34,11 @@ from trading_calendar import is_trading_day, prev_trading_day
 # fetch_data 专用（cooldown/命中）；探测用 PROBE_HEALTH_PATH（分离防并发冲突）
 PROBE_HEALTH_PATH = SCRIPT_DIR / "probe_health.json"     # 探测专用（与 fetch 完全分离，零并发冲突）
 PROBE_STATE_PATH = SCRIPT_DIR / "probe_state.json"
+CONFIG_PATH = SCRIPT_DIR / "config.json"
 
-# 分级 → 乘数（经验值）
-LEVEL_MULTIPLIER = {
+# 分级 → 乘数（默认值；config['link_multiplier'] 可覆盖——2-4 周后按实际
+# 降级频率校准只需改配置，不动代码）
+DEFAULT_LEVEL_MULTIPLIER = {
     "full": 1.0,
     "degraded": 0.75,
     "stale": 0.6,
@@ -44,6 +46,25 @@ LEVEL_MULTIPLIER = {
     "blind": 0.0,
 }
 LEVEL_EMOJI = {"full": "🟢", "degraded": "🟡", "stale": "🟠", "broken": "🔴", "blind": "⛔"}
+
+
+def load_multipliers() -> dict:
+    """读 config['link_multiplier']，带默认值兜底 + 范围校验（0~1）
+
+    config 缺失/损坏/值越界 → 回退默认（不崩）；合法值必须 ∈ [0,1]（
+    乘数 >1 会让建议仓位超过信号仓位，违背风控语义）。
+    """
+    mult = dict(DEFAULT_LEVEL_MULTIPLIER)
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            cfg_mult = (json.load(f).get("link_multiplier") or {})
+        for k in mult:
+            v = cfg_mult.get(k)
+            if isinstance(v, (int, float)) and 0.0 <= float(v) <= 1.0:
+                mult[k] = float(v)
+    except (OSError, json.JSONDecodeError):
+        pass  # config 异常 → 用默认乘数
+    return mult
 
 # 滞回：连续 N 次同向探测才切换等级
 HYSTERESIS_N = 2
@@ -244,7 +265,7 @@ def _compute_confidence(symbol: str) -> Dict:
     level = state["level"]
     return {
         "level": level,
-        "multiplier": LEVEL_MULTIPLIER[level],
+        "multiplier": load_multipliers().get(level, 1.0),
         "emoji": LEVEL_EMOJI[level],
         "reason": raw.get("reason", ""),
         "stale_days": raw.get("stale_days"),
@@ -274,7 +295,7 @@ def evaluate_alert(symbol: str = "588000") -> Dict:
         "broken": "emergency", "blind": "emergency",
         "degraded": "normal", "stale": "normal",
     }.get(c["level"], "none")
-    return {
+    alert = {
         "should_alert": bool(c.get("changed")) and severity != "none",
         "severity": severity,
         "level": c["level"],
@@ -282,7 +303,40 @@ def evaluate_alert(symbol: str = "588000") -> Dict:
         "reason": c.get("reason", ""),
         "changed": c.get("changed", False),
         "stale_days": c.get("stale_days"),
+        "ts": c.get("ts", time.time()),
     }
+    _log_probe(symbol, alert)  # 降级日志（校准数据积累，失败不影响主流程）
+    return alert
+
+
+def _log_probe(symbol: str, alert: Dict) -> None:
+    """记录每次探测评估结果到 probe_log.csv（供 2-4 周后乘数校准）
+
+    schema: ts,date,level,multiplier,severity,should_alert,reason
+    追加写；CSV 损坏时静默跳过（日志是辅助数据，不影响主流程）。
+    """
+    try:
+        import csv
+        path = PROJECT_ROOT / "data" / symbol / "probe_log.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = not path.exists()
+        with open(path, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["ts", "date", "level", "multiplier", "severity", "should_alert", "reason"])
+            ts = alert.get("ts", time.time())
+            w.writerow([
+                int(ts),
+                date.fromtimestamp(ts).isoformat() if ts else "",
+                alert.get("level", ""),
+                alert.get("multiplier", ""),
+                alert.get("severity", ""),
+                int(bool(alert.get("should_alert"))),
+                alert.get("reason", ""),
+            ])
+    except Exception as e:
+        # 日志失败不打扰主流程，但需可诊断（校准数据缺口要能追溯）
+        print(f"  [WARN] probe_log 写入失败: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 def apply_multiplier(signal_position: float, confidence: Dict) -> Dict:

@@ -21,6 +21,8 @@ from typing import Optional
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 STATE_PATH = PROJECT_ROOT / "data" / "588000" / "state.json"
 
 
@@ -221,16 +223,9 @@ def decide(latest_features: dict, _historical_features=None, state_override=None
             action = '继续观望'
             explanation = f'模糊区间，继续等待确认'
 
-    # --- 仓位计算 ---
-    def calc_position(state_val, score):
-        if state_val == '空仓':
-            return 0.0
-        pos_score = max(0.0, min(score, 1.0))
-        if pos_score > 0.7:
-            return 0.7
-        return round(0.3 + pos_score * 0.4, 2)
-
-    position = calc_position(new_state, total_score)
+    # --- 仓位计算（position_map 参数化，signal_rules/backtest/paper_trade 三方同构） ---
+    from position_map import calc_position
+    position = calc_position(new_state, total_score, config)
 
     # --- 保存状态 ---
     state_update = {
