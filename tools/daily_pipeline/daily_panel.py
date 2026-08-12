@@ -82,6 +82,9 @@ def main():
     latest_row = latest_features.iloc[-1].to_dict()
     result = decide(latest_row, features_df)
 
+    # --- 3.5 链路可信度 → 建议仓位（实盘风控） ---
+    _attach_link_confidence(result, symbol)
+
     # --- 4. 输出 ---
     if args.json:
         # result 的 date 来自 features 可能是 Timestamp，需先转 str（否则 json.dumps 崩）
@@ -101,6 +104,44 @@ def main():
             print(f"  [SKIP] {today} 不是交易日，跳过推送")
         else:
             push_signal_card(result)
+
+
+def _parse_position(result: dict) -> float:
+    """解析 result['position']（形如 "60%"）为小数，失败返回 0.0"""
+    try:
+        pos_str = str(result.get('position', '0%')).replace('%', '').strip()
+        return float(pos_str) / 100.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _attach_link_confidence(result: dict, symbol: str) -> dict:
+    """附加链路可信度 → 建议仓位（实盘风控：信号仓位 × 链路乘数）
+
+    探测降级/数据陈旧时自动打折，避免基于不可靠数据的重仓决策。
+    只影响建议，不写 state（状态机照常，执行权在用户）。
+    """
+    try:
+        from link_health import get_link_confidence, apply_multiplier
+        confidence = get_link_confidence(symbol)
+        signal_pos = _parse_position(result)
+        adj = apply_multiplier(signal_pos, confidence)
+        result['link_confidence'] = {
+            'level': adj['level'],
+            'emoji': adj['emoji'],
+            'multiplier': adj['multiplier'],
+            'reason': adj['reason'],
+            'stale_days': adj['stale_days'],
+        }
+        result['advised_position'] = f"{adj['advised_position'] * 100:.0f}%"
+    except Exception as e:
+        # 附加失败不阻塞信号，但**保守降级**（满信任违背风控目标）：
+        # 链路模块异常 = 无法确认数据质量 → 按 degraded 0.75 打折并标明原因
+        result['link_confidence'] = {'level': 'degraded', 'emoji': '🟡', 'multiplier': 0.75,
+                                     'reason': f'链路评估异常(保守降级): {type(e).__name__}', 'stale_days': None}
+        sig = _parse_position(result)
+        result['advised_position'] = f"{round(sig * 0.75, 2) * 100:.0f}%"
+    return result
 
 
 def run_realtime(args, config: dict, symbol: str) -> dict:
@@ -177,6 +218,9 @@ def run_realtime(args, config: dict, symbol: str) -> dict:
     result['signal_mode'] = 'realtime'
     result['signal_data_date'] = data_date
     result['is_preview'] = not is_confirm
+
+    # 链路可信度 → 建议仓位（实盘风控：实时链路降级/数据陈旧时打折）
+    _attach_link_confidence(result, symbol)
 
     # 输出
     if args.json:

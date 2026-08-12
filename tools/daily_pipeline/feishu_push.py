@@ -150,6 +150,27 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID, preview: bool = Fa
         '观望': '👀',
     }.get(decision, '📊')
 
+    # 链路可信度 → 建议仓位（实盘风控，probe 探测结果驱动）
+    link = result.get('link_confidence') or {}
+    advised = result['advised_position'] if result.get('advised_position') is not None else position
+    if link.get('multiplier', 1.0) < 1.0 and advised != position:
+        link_line = (
+            f"链路可信：{link.get('emoji', '🟡')} {link.get('level', 'degraded')}"
+            f" ×{link.get('multiplier', 1.0):.2f}"
+            f"（{link.get('reason', '')}）\n"
+            f"建议仓位：{advised}（信号 {position} 打折）"
+        )
+    elif link.get('multiplier', 1.0) < 1.0:
+        # 降级但打折后与信号相同（如信号 0%）→ 显示降级原因但不误导标注「打折」
+        link_line = (
+            f"链路可信：{link.get('emoji', '🟡')} {link.get('level', 'degraded')}"
+            f" ×{link.get('multiplier', 1.0):.2f}"
+            f"（{link.get('reason', '')}）\n"
+            f"建议仓位：{advised}"
+        )
+    else:
+        link_line = f"建议仓位：{position}"
+
     # 信号时点标注：盘中实时预览 / 尾盘确认 / 收盘口径
     if preview:
         timing_label = '🟡 盘中预览（实时数据）'
@@ -165,7 +186,7 @@ def push_signal_card(result: dict, to_chat_id: str = CHAT_ID, preview: bool = Fa
         f"标的：588000 科创50ETF\n"
         f"决策：{decision_emoji} {decision}\n"
         f"操作：{action}\n"
-        f"仓位建议：{position}\n"
+        f"{link_line}\n"
         f"综合分：{score:+.2f}（周线调节 {weekly_mod:+.2f}）\n"
         f"{data_note}\n"
         f"\n"

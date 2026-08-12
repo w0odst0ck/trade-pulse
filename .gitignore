@@ -26,3 +26,6 @@ tools/ui/dashboard.html
 
 # 运行日志（分钟拉取等）
 logs/
+# 探测状态（运行时文件，链路可信度滞回状态，不入 git）
+tools/daily_pipeline/probe_state.json
+tools/daily_pipeline/probe_health.json
