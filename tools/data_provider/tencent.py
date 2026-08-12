@@ -9,7 +9,7 @@ from .base import DataProvider, DataProviderError
 
 
 class TencentProvider(DataProvider):
-    """通过腾讯网页接口（web.ifzq.gtimg.cn）直拉日线数据
+    """通过腾讯网页接口（ifzq.gtimg.cn）直拉日线数据
 
     特点：
     - 与东财系（AkShare/EastMoney）完全独立，互为灾备
@@ -17,9 +17,12 @@ class TencentProvider(DataProvider):
     - 返回前复权日K（qfqday），历史覆盖深
     - 单次请求有根数上限（实测 count=1000 只回 640 根），
       必须按自然年分段循环拉取后拼接去重，保证区间全覆盖
+
+    ⚠️ 2026-08-12 域名变更：web.ifzq.gtimg.cn 301→web3（DNS 解析失败，
+    源已失效，实测 501）→ 改用 ifzq.gtimg.cn（无 web 前缀，稳定 200）。
     """
 
-    BASE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    BASE_URL = "https://ifzq.gtimg.cn/appstock/app/fqkline/get"
     HEADERS = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
