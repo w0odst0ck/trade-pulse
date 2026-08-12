@@ -43,7 +43,9 @@ DATA_DIR = PROJECT_ROOT / "data" / "588000"
 DOCS_DIR = PROJECT_ROOT / "docs"
 
 # 腾讯 fqkline 接口（与 data_provider/tencent.py 同源）
-TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+# ⚠️ 2026-08-12 域名变更：web.ifzq.gtimg.cn 301→web3（DNS 解析失败），
+# 改用 ifzq.gtimg.cn（无 web 前缀，稳定 200）——探活必须与生产 URL 一致
+TENCENT_KLINE_URL = "https://ifzq.gtimg.cn/appstock/app/fqkline/get"
 TENCENT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -291,7 +293,7 @@ def _recent_start(days: int = 7) -> str:
 
 
 def _check_tencent(symbol: str) -> dict:
-    """腾讯源：web.ifzq.gtimg.cn fqkline 拉 1 根"""
+    """腾讯源：ifzq.gtimg.cn fqkline 拉 1 根（2026-08-12 起不再用 web.ifzq）"""
     _clear_proxy_env()
     try:
         import requests
