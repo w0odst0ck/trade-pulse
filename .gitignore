@@ -29,3 +29,7 @@ logs/
 # 探测状态（运行时文件，链路可信度滞回状态，不入 git）
 tools/daily_pipeline/probe_state.json
 tools/daily_pipeline/probe_health.json
+
+# collab-flow 运行时 + dsh 设计文档
+.flow/
+designs/
